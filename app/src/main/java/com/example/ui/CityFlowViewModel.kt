@@ -11,12 +11,9 @@ import com.example.model.Player
 import com.example.model.RealtimeEvent
 import com.example.model.Staff
 import com.example.model.StaffRole
-import com.example.model.StaffStatus
 import com.example.model.Transaction
 import com.example.model.Vehicle
 import com.example.model.VehicleClass
-import com.example.model.VehicleStatus
-import com.example.simulation.SimulationEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,7 +21,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.util.UUID
 
 enum class AppScreen(val title: String) {
     OPERATIONS("Live Map"),
@@ -34,10 +30,13 @@ enum class AppScreen(val title: String) {
     EXPANSION("Expansion")
 }
 
+/**
+ * Thin UI shell over the authoritative tick service. Every mutation below is an intent posted to
+ * PocketBase; local state is replaced only by server snapshots and realtime deltas.
+ */
 class CityFlowViewModel : ViewModel() {
     val roadNetwork = CityRoadNetwork()
     val repository = PocketBaseRepository(roadNetwork)
-    val simulationEngine = SimulationEngine(repository, roadNetwork)
 
     val player: StateFlow<Player> = repository.player
     val staff: StateFlow<Map<String, Staff>> = repository.staff
@@ -56,10 +55,19 @@ class CityFlowViewModel : ViewModel() {
     val incidentsList: StateFlow<List<Incident>> = incidentsMap.map { it.values.toList() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val currentTick: StateFlow<Long> = simulationEngine.currentTick
-    val isPaused: StateFlow<Boolean> = simulationEngine.isPaused
-    val speedMultiplier: StateFlow<Float> = simulationEngine.tickSpeedMultiplier
-    val autoDispatchEnabled: StateFlow<Boolean> = simulationEngine.autoDispatchEnabled
+    val currentTick: StateFlow<Long> = player.map { it.tick }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
+
+    val isPaused: StateFlow<Boolean> = player.map { it.paused }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val speedMultiplier: StateFlow<Float> = player.map { it.speed.toFloat() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 1f)
+
+    val autoDispatchEnabled: StateFlow<Boolean> = player.map { it.autoDispatchEnabled }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val connection = repository.connection
 
     private val _currentScreen = MutableStateFlow(AppScreen.OPERATIONS)
     val currentScreen: StateFlow<AppScreen> = _currentScreen.asStateFlow()
@@ -71,11 +79,19 @@ class CityFlowViewModel : ViewModel() {
     val activeEmergency: StateFlow<Incident?> = _activeEmergency.asStateFlow()
 
     init {
-        // Observe real-time incident events for severity == 3 popup (Prompt Section 5 & 10)
+        repository.start()
         viewModelScope.launch {
             repository.observeIncidents().collect { event ->
-                if (event is RealtimeEvent.Created && event.item.severity >= 3) {
+                if (event is RealtimeEvent.Created && event.item.severity >= 3 && !event.item.resolved) {
                     _activeEmergency.value = event.item
+                }
+            }
+        }
+        // Severity-3 incidents already open when the app connects.
+        viewModelScope.launch {
+            repository.incidents.collect { map ->
+                if (_activeEmergency.value == null) {
+                    map.values.firstOrNull { it.severity >= 3 && !it.resolved }?.let { _activeEmergency.value = it }
                 }
             }
         }
@@ -90,62 +106,54 @@ class CityFlowViewModel : ViewModel() {
     }
 
     fun togglePause() {
-        simulationEngine.setPaused(!isPaused.value)
+        repository.setPaused(!isPaused.value)
     }
 
     fun setSpeedMultiplier(multiplier: Float) {
-        simulationEngine.setSpeedMultiplier(multiplier)
+        repository.sendIntent(
+            "SET_SPEED",
+            org.json.JSONObject().put("speed", multiplier.toDouble().coerceIn(1.0, 4.0))
+        )
     }
 
     fun stepTick() {
-        simulationEngine.advanceManualTick()
+        repository.forceStep()
     }
 
     fun toggleAutoDispatch() {
-        simulationEngine.toggleAutoDispatch()
+        repository.setAutoDispatch(!autoDispatchEnabled.value)
     }
 
     fun assignContract(contractId: String, vehicleId: String) {
-        val idempotencyKey = "manual_assign_" + UUID.randomUUID().toString()
-        simulationEngine.assignContractToVehicle(contractId, vehicleId, idempotencyKey)
+        repository.assignContract(contractId, vehicleId)
     }
 
     fun spawnContract() {
-        simulationEngine.spawnContract()
+        repository.spawnContract()
     }
 
     fun purchaseVehicle(vClass: VehicleClass) {
-        simulationEngine.purchaseVehicle(vClass, vClass.label)
+        repository.purchaseVehicle(vClass)
     }
 
     fun refuelVehicle(vehicleId: String) {
-        val v = repository.vehicles.value[vehicleId] ?: return
-        if (player.value.cash >= 90.0) {
-            repository.updatePlayerCash(-90.0, "Refuel ${v.plate}", com.example.model.TransactionCategory.FUEL, currentTick = currentTick.value)
-            repository.emitVehicleUpdate(v.copy(fuel = 100.0, lowFuelTicks = 0))
-        }
+        repository.refuelVehicle(vehicleId)
     }
 
     fun serviceVehicle(vehicleId: String) {
-        val v = repository.vehicles.value[vehicleId] ?: return
-        if (player.value.cash >= 220.0) {
-            repository.updatePlayerCash(-220.0, "Preventative Service ${v.plate}", com.example.model.TransactionCategory.REPAIR, currentTick = currentTick.value)
-            repository.emitVehicleUpdate(v.copy(condition = 100.0))
-        }
+        repository.serviceVehicle(vehicleId)
     }
 
     fun hireStaff(name: String, role: StaffRole, skill: Int) {
-        simulationEngine.hireStaff(name, role, skill)
+        repository.hireStaff(name, role, skill)
     }
 
     fun toggleStaffShift(staffId: String) {
-        val member = repository.staff.value[staffId] ?: return
-        val newStatus = if (member.status == StaffStatus.ON_SHIFT) StaffStatus.RESTING else StaffStatus.ON_SHIFT
-        repository.updateStaff(member.copy(status = newStatus))
+        repository.toggleStaffShift(staffId)
     }
 
     fun unlockZone(zoneId: String) {
-        repository.unlockZone(zoneId, currentTick.value)
+        repository.unlockZone(zoneId)
     }
 
     fun setActiveEmergency(incident: Incident?) {
@@ -153,28 +161,36 @@ class CityFlowViewModel : ViewModel() {
     }
 
     fun resolveLowFuel(vehicleId: String, action: String) {
-        simulationEngine.resolveLowFuel(vehicleId, action)
-        _activeEmergency.value?.let { repository.emitIncidentResolved(it.id) }
-        _activeEmergency.value = null
+        resolveForVehicle(vehicleId, action)
     }
 
     fun resolveBreakdown(vehicleId: String, action: String) {
-        simulationEngine.resolveBreakdown(vehicleId, action)
-        _activeEmergency.value?.let { repository.emitIncidentResolved(it.id) }
-        _activeEmergency.value = null
+        resolveForVehicle(vehicleId, action)
     }
 
     fun resolveStrike(action: String) {
-        simulationEngine.resolveStrike(action)
-        _activeEmergency.value?.let { repository.emitIncidentResolved(it.id) }
+        val incident = _activeEmergency.value ?: return
+        repository.resolveIncident(incident.id, action)
+        _activeEmergency.value = null
+    }
+
+    private fun resolveForVehicle(vehicleId: String, action: String) {
+        val incident = _activeEmergency.value
+            ?: repository.incidents.value.values.firstOrNull { it.vehicleId == vehicleId && !it.resolved }
+        if (incident != null) repository.resolveIncident(incident.id, action)
         _activeEmergency.value = null
     }
 
     fun saveSettings(pbUrl: String, osrmUrl: String, autoDispatch: Boolean) {
-        repository.pocketBaseUrl = pbUrl
         roadNetwork.osrmBaseUrl = osrmUrl
+        repository.configure(pbUrl)
         if (autoDispatch != autoDispatchEnabled.value) {
-            simulationEngine.toggleAutoDispatch()
+            repository.setAutoDispatch(autoDispatch)
         }
+    }
+
+    override fun onCleared() {
+        repository.stop()
+        super.onCleared()
     }
 }

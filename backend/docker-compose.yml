@@ -1,0 +1,31 @@
+services:
+  pocketbase:
+    build: ./pocketbase
+    command: ["serve", "--http=0.0.0.0:8090"]
+    ports: ["8090:8090"]
+    volumes:
+      - ./pocketbase/pb_data:/pb_data
+      - ./pocketbase/pb_migrations:/pb_migrations
+    restart: unless-stopped
+
+  osrm-prepare:
+    image: ghcr.io/project-osrm/osrm-backend:latest
+    volumes:
+      - ./osrm/data:/data
+    entrypoint: >
+      sh -c "if [ -f /data/south-africa-latest.osrm ]; then echo 'OSRM graph already prepared';
+             else osrm-extract -p /opt/car.lua /data/south-africa-latest.osm.pbf &&
+                  osrm-partition /data/south-africa-latest.osrm &&
+                  osrm-customize /data/south-africa-latest.osrm; fi"
+    restart: "no"
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:latest
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "10000", "/data/south-africa-latest.osrm"]
+    ports: ["5000:5000"]
+    volumes:
+      - ./osrm/data:/data
+    depends_on:
+      osrm-prepare:
+        condition: service_completed_successfully
+    restart: unless-stopped

@@ -19,8 +19,12 @@ data class Player(
     val email: String = "operator@cityflow.local",
     val companyName: String = "Apex City Logistics",
     val baseLocation: LatLng = LatLng(-33.9249, 18.4241), // Cape Town CBD Base
-    val cash: Double = 18500.0,
-    val level: Int = 1
+    val cash: Double = 0.0,
+    val level: Int = 1,
+    val tick: Long = 0L,
+    val autoDispatchEnabled: Boolean = true,
+    val paused: Boolean = false,
+    val speed: Double = 1.0
 )
 
 enum class StaffRole {
@@ -146,7 +150,8 @@ enum class IncidentType(val label: String, val defaultCost: Double) {
     BREAKDOWN("Mechanical Engine Failure", 350.0),
     ACCIDENT("Minor Collision Delay", 450.0),
     STRIKE("Labor Union Protest", 800.0),
-    TRAFFIC_JAM("Severe Gridlock", 0.0)
+    TRAFFIC_JAM("Severe Gridlock", 0.0),
+    FATIGUE("Driver Fatigue Alert", 0.0)
 }
 
 data class Incident(

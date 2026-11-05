@@ -15,4 +15,9 @@
 .cxx
 local.properties
 .env
+# Never commit signing material; CI restores it from repository secrets.
 debug.keystore
+*.jks
+*.keystore
+keystore.properties
+*.p12

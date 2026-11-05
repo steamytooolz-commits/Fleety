@@ -102,6 +102,7 @@ fun CityFlowApp(
     val contracts by viewModel.contractsList.collectAsStateWithLifecycle()
     val incidents by viewModel.incidentsList.collectAsStateWithLifecycle()
     val zones by viewModel.zones.collectAsStateWithLifecycle()
+    val connection by viewModel.connection.collectAsStateWithLifecycle()
 
     val currentTick by viewModel.currentTick.collectAsStateWithLifecycle()
     val isPaused by viewModel.isPaused.collectAsStateWithLifecycle()
@@ -153,9 +154,9 @@ fun CityFlowApp(
                                 }
                             }
                             Text(
-                                text = player.companyName,
+                                text = "${player.companyName} • ${connection.name}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = TextSecondaryDark,
+                                color = if (connection == com.example.data.ConnectionState.ONLINE) EmeraldSuccess else TextSecondaryDark,
                                 fontSize = 11.sp
                             )
                         }
