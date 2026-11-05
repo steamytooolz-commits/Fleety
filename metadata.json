@@ -1,0 +1,6 @@
+{
+  "name": "CityFlow",
+  "description": "Real-time city logistics and fleet management simulation with live road navigation, vehicle dispatching, and dynamic economy.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
