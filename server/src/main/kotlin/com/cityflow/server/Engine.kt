@@ -67,11 +67,78 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
             "REFUEL" -> {
                 val vid = str("vehicle_id")
                 val v = w.vehicles.find { it.id == vid } ?: return IntentOutcome(w, false, "Unknown vehicle")
-                val cost = Fleet.of(v.vehicleClass).tank * cfg.fuelPrice + cfg.refuelFee
+                val tank = Fleet.of(v.vehicleClass).tank
+                val needed = tank * ((100.0 - v.fuel) / 100.0).coerceIn(0.0, 1.0)
+                // Depot reserve is already paid for, so it is used before pump fuel.
+                val fromReserve = minOf(w.fuelReserve, needed)
+                val paidLitres = needed - fromReserve
+                val cost = paidLitres * w.fuelPrice + if (paidLitres > 0.01) cfg.refuelFee else 0.0
                 if (w.cash < cost) return IntentOutcome(w, false, "Insufficient cash")
-                w = w.copy(vehicles = w.vehicles.map { if (it.id == v.id) it.copy(fuel = 100.0, lowFuelTicks = 0) else it })
-                tx(TxCategory.FUEL, -cost, "Refuelled ${v.plate}", key = intent.key)
+                w = w.copy(
+                    fuelReserve = (w.fuelReserve - fromReserve).coerceAtLeast(0.0),
+                    vehicles = w.vehicles.map { if (it.id == v.id) it.copy(fuel = 100.0, lowFuelTicks = 0) else it },
+                )
+                if (cost > 0.0) tx(TxCategory.FUEL, -cost, "Refuelled ${v.plate}", key = intent.key)
                 IntentOutcome(w, true, "Vehicle refuelled")
+            }
+            "BUY_FUEL" -> {
+                val litres = (num("litres") ?: cfg.depotLitreStep).coerceIn(1.0, cfg.depotCapacity)
+                val room = (cfg.depotCapacity - w.fuelReserve).coerceAtLeast(0.0)
+                if (room < 1.0) return IntentOutcome(w, false, "Depot tank is full")
+                val bought = minOf(litres, room)
+                val cost = round(bought * w.fuelPrice * (1.0 - cfg.depotDiscount) * 100) / 100
+                if (w.cash < cost) return IntentOutcome(w, false, "Insufficient cash")
+                w = w.copy(fuelReserve = round((w.fuelReserve + bought) * 10) / 10.0)
+                tx(TxCategory.FUEL, -cost, "Depot fuel ${bought.toInt()} L @ R${round(w.fuelPrice * (1 - cfg.depotDiscount) * 100) / 100}", key = intent.key)
+                IntentOutcome(w, true, "Bought ${bought.toInt()} L into the depot")
+            }
+            "SCHEDULE_SERVICE" -> {
+                val vid = str("vehicle_id")
+                val v = w.vehicles.find { it.id == vid } ?: return IntentOutcome(w, false, "Unknown vehicle")
+                if (v.status != VehicleStatus.IDLE) return IntentOutcome(w, false, "Vehicle must be idle to enter the workshop")
+                if (v.condition >= 99.5) return IntentOutcome(w, false, "Vehicle needs no service")
+                val cost = round(cfg.maintenanceCost * 0.9 * 100) / 100
+                if (w.cash < cost) return IntentOutcome(w, false, "Insufficient cash")
+                // Skilled mechanics shorten the bay time.
+                val mechanics = w.staff.filter { it.role == Role.MECHANIC && it.status == StaffStatus.ON_SHIFT }
+                val speedUp = mechanics.sumOf { it.skill } / 4
+                val bayTicks = (cfg.serviceTicks - speedUp).coerceIn(2, cfg.serviceTicks)
+                w = w.copy(vehicles = w.vehicles.map { if (it.id == v.id) it.copy(status = VehicleStatus.MAINTENANCE, serviceTicks = bayTicks) else it })
+                tx(TxCategory.REPAIR, -cost, "Workshop booking ${v.plate}", key = intent.key)
+                IntentOutcome(w, true, "${v.plate} booked into the workshop")
+            }
+            "START_CAMPAIGN" -> {
+                val zid = str("zone_id") ?: return IntentOutcome(w, false, "Zone is required")
+                val z = w.zones.find { it.zoneId == zid } ?: return IntentOutcome(w, false, "Unknown zone")
+                if (!z.unlocked) return IntentOutcome(w, false, "Zone is not licensed")
+                val budget = (num("budget") ?: 3000.0).coerceIn(cfg.campaignMinSpend, cfg.campaignMaxSpend)
+                if (w.cash < budget) return IntentOutcome(w, false, "Insufficient cash for this campaign")
+                if (w.campaigns.any { it.zoneId == zid && it.ticksLeft > 0 }) return IntentOutcome(w, false, "A campaign is already running in ${z.name}")
+                val boost = budget / 6000.0
+                val campaign = Campaign("cmp_${w.tick}_$zid", zid, cfg.campaignTicks, round(budget * 100) / 100, boost, boost * 0.5)
+                w = w.copy(campaigns = w.campaigns + campaign)
+                tx(TxCategory.MARKETING, -budget, "Marketing campaign — ${z.name}", key = intent.key)
+                IntentOutcome(w, true, "Campaign live in ${z.name} for ${cfg.campaignTicks} cycles")
+            }
+            "TAKE_LOAN" -> {
+                val already = w.loan
+                if (already != null) return IntentOutcome(w, false, "Repay the current loan first")
+                val amount = (num("amount") ?: 5000.0).coerceAtMost(w.creditLimit)
+                if (amount < 500.0) return IntentOutcome(w, false, "Credit line too small")
+                val loan = Loan(round(amount * 100) / 100, cfg.loanRate, w.tick, w.tick + cfg.loanTermTicks, round(amount * 100) / 100)
+                w = w.copy(loan = loan)
+                tx(TxCategory.LOAN, amount, "Operating loan drawn", key = intent.key)
+                IntentOutcome(w, true, "Drew a R${amount.toInt()} operating loan")
+            }
+            "REPAY_LOAN" -> {
+                val loan = w.loan ?: return IntentOutcome(w, false, "No active loan")
+                val amount = (num("amount") ?: loan.remaining).coerceIn(0.0, loan.remaining)
+                if (amount <= 0.0) return IntentOutcome(w, false, "Nothing to repay")
+                if (w.cash < amount) return IntentOutcome(w, false, "Insufficient cash")
+                val left = round((loan.remaining - amount) * 100) / 100
+                w = w.copy(loan = if (left <= 0.01) null else loan.copy(remaining = left))
+                tx(TxCategory.LOAN, -amount, "Loan repayment", key = intent.key)
+                IntentOutcome(w, true, if (left <= 0.01) "Loan settled" else "Repaid R${amount.toInt()}")
             }
             "SERVICE" -> {
                 val vid = str("vehicle_id")
@@ -289,6 +356,11 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
         var completedTotal = input.lifetimeCompleted
         var failedTotal = input.lifetimeFailed
         var revenueTotal = input.lifetimeRevenue
+        var fuelPrice = input.fuelPrice
+        var fuelReserve = input.fuelReserve
+        var cityEvent = input.cityEvent
+        val campaigns = input.campaigns.toMutableList()
+        var loan = input.loan
 
         fun zoneOf(p: LngLat) = zones.values.firstOrNull { it.bounds.contains(p) }
         fun driverOf(v: Vehicle) = v.driverId?.let { staff[it] }
@@ -315,6 +387,7 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
         }
 
         fun run(): TickResult {
+            advanceCity()
             restDrivers()
             for (id in vehicles.keys.toList()) vehicles[id] = vehicles[id]!!.let { tickVehicle(it) }
             applyFatigue()
@@ -330,6 +403,40 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
             return TickResult(world, events)
         }
 
+        /** City events, pump price drift and campaign countdowns. Deterministic per tick. */
+        fun advanceCity() {
+            val current = cityEvent
+            if (current != null) cityEvent = if (current.ticksLeft > 1) current.copy(ticksLeft = current.ticksLeft - 1) else null
+            if (tick % cfg.eventEveryTicks == 0L) {
+                val rng = Rng(Rng.seed(input.seed, tick, "city-event"))
+                val next = when (rng.nextInt(5)) {
+                    0 -> CityEvent(EventKind.RAIN, "Coastal rain — slick roads", cfg.eventTicks, speedFactor = 0.78, demandFactor = 1.15, rewardFactor = 1.10)
+                    1 -> CityEvent(EventKind.FESTIVAL, "Street festival — crowds downtown", cfg.eventTicks, speedFactor = 0.80, demandFactor = 1.55, rewardFactor = 1.25)
+                    2 -> CityEvent(EventKind.UNION_STRIKE, "Union action — slow freight", cfg.eventTicks, speedFactor = 0.90, demandFactor = 0.80, rewardFactor = 1.05)
+                    3 -> CityEvent(EventKind.HEATWAVE, "Heatwave — chilled demand spikes", cfg.eventTicks, speedFactor = 0.95, demandFactor = 1.25, rewardFactor = 1.05)
+                    else -> CityEvent(EventKind.ROADWORKS, "Roadworks — detours and wear", cfg.eventTicks, speedFactor = 0.72, demandFactor = 0.90, rewardFactor = 1.15)
+                }
+                cityEvent = next
+                events += Event("city", next.label)
+            }
+            if (tick % cfg.fuelDriftEveryTicks == 0L) {
+                val rng = Rng(Rng.seed(input.seed, tick, "fuel-price"))
+                fuelPrice = round((fuelPrice * rng.range(0.94, 1.06)).coerceIn(0.90, 1.60) * 100) / 100
+            }
+            for (i in campaigns.indices) {
+                val c = campaigns[i]
+                if (c.ticksLeft <= 0) continue
+                val left = c.ticksLeft - 1
+                campaigns[i] = c.copy(ticksLeft = left)
+                if (left == 0) events += Event("campaign", "Campaign in ${c.zoneId} finished")
+            }
+            // Keep a short history of finished campaigns so the client can show what just ended.
+            while (campaigns.count { it.ticksLeft == 0 } > 4) {
+                val idx = campaigns.indexOfFirst { it.ticksLeft == 0 }
+                if (idx < 0) break else campaigns.removeAt(idx)
+            }
+        }
+
         fun snapshot(includeLedger: Boolean): World {
             val active = contracts.values.filter { it.status in setOf(ContractStatus.OPEN, ContractStatus.ASSIGNED, ContractStatus.IN_PROGRESS) }
             val closed = contracts.values.filter { it.status in setOf(ContractStatus.COMPLETED, ContractStatus.FAILED) }
@@ -343,6 +450,9 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
                 contracts = active + closed, incidents = openIncidents + resolvedIncidents,
                 ledger = if (includeLedger) ledger.takeLast(400) else input.ledger,
                 lifetimeCompleted = completedTotal, lifetimeFailed = failedTotal, lifetimeRevenue = revenueTotal,
+                fuelPrice = fuelPrice, fuelReserve = round(fuelReserve * 10) / 10.0,
+                creditLimit = Economy.creditLimit(completedTotal), loan = loan,
+                campaigns = campaigns.toList(), cityEvent = cityEvent,
             )
         }
 
@@ -377,7 +487,9 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
             val c = contractOf(v)
             val d = driverOf(v)
             return when (v.status) {
-                VehicleStatus.IDLE, VehicleStatus.BREAKDOWN, VehicleStatus.MAINTENANCE, VehicleStatus.FORCED_REST -> v
+                VehicleStatus.IDLE, VehicleStatus.BREAKDOWN, VehicleStatus.FORCED_REST -> v
+                VehicleStatus.MAINTENANCE -> if (v.serviceTicks > 1) v.copy(serviceTicks = v.serviceTicks - 1)
+                    else v.copy(status = VehicleStatus.IDLE, condition = 100.0, serviceTicks = 0)
                 VehicleStatus.AT_PICKUP -> {
                     if (v.loadingTicks > 1) v.copy(loadingTicks = v.loadingTicks - 1)
                     else if (c == null) release(v)
@@ -401,14 +513,17 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
             if (v.route.isEmpty()) return release(v)
             val traffic = zoneOf(v.location)?.trafficIndex ?: 0.25
             val spec = Fleet.of(v.vehicleClass)
-            val km = spec.speed * (1 - 0.5 * traffic) / 60.0
+            // Weather and roadworks slow every leg; roadworks also chew through condition.
+            val speedFactor = cityEvent?.takeIf { it.ticksLeft > 0 }?.speedFactor ?: 1.0
+            val wearFactor = if (cityEvent?.takeIf { it.ticksLeft > 0 }?.kind == EventKind.ROADWORKS) 1.6 else 1.0
+            val km = spec.speed * speedFactor * (1 - 0.5 * traffic) / 60.0
             val burn = spec.burn * (1 + (c?.payload?.weightKg ?: 0.0) * 0.0005) * (1 + traffic * 0.1) / max(1, d?.skill ?: 5)
             val travelled = v.travelledKm + km
             val pos = Geo.at(v.route, travelled)
             var next = v.copy(
                 fuel = (v.fuel - burn).coerceAtLeast(0.0),
                 mileageKm = v.mileageKm + km,
-                condition = (v.condition - km * spec.wearPerKm).coerceIn(0.0, 100.0),
+                condition = (v.condition - km * spec.wearPerKm * wearFactor).coerceIn(0.0, 100.0),
                 location = pos.point, travelledKm = travelled, routeProgress = pos.progress, heading = pos.heading,
             )
             next = if (next.fuel <= 0.0) next.copy(fuel = 0.0) else next
@@ -510,12 +625,32 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
             }
             val updated = input.lastPayrollTick + cfg.payrollTicks
             lastPayroll = updated
+            // Interest is unavoidable; principal only repays while a reserve stays in the bank.
+            val active = loan
+            if (active != null) {
+                val interest = round(active.remaining * active.rate * 100) / 100
+                var balance = active.copy(remaining = round((active.remaining + interest) * 100) / 100)
+                if (interest > 0.0) money(TxCategory.LOAN, -interest, "Loan interest")
+                val spare = (cash - 1500.0).coerceAtLeast(0.0)
+                val repay = minOf(balance.remaining, spare)
+                if (repay > 0.5) {
+                    money(TxCategory.LOAN, -repay, "Scheduled loan repayment")
+                    balance = balance.copy(remaining = round((balance.remaining - repay) * 100) / 100)
+                }
+                loan = if (balance.remaining <= 0.01) null else balance
+            }
         }
 
         var lastPayroll: Long = input.lastPayrollTick
 
         fun dispatch() {
-            val open = contracts.values.filter { it.status == ContractStatus.OPEN }.sortedWith(compareBy({ it.createdAtTick }, { it.id }))
+            fun tierPriority(t: ContractTier) = when (t) {
+                ContractTier.EXPRESS -> 0
+                ContractTier.BULK -> 1
+                ContractTier.STANDARD -> 2
+            }
+            val open = contracts.values.filter { it.status == ContractStatus.OPEN }
+                .sortedWith(compareBy({ tierPriority(it.tier) }, { it.createdAtTick }, { it.id }))
             for (c in open) {
                 val candidates = mutableListOf<Matching.Candidate>()
                 for (v in vehicles.values) {

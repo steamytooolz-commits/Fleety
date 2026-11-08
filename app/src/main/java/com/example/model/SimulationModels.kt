@@ -30,7 +30,13 @@ data class Player(
     val tick: Long = 0L,
     val autoDispatchEnabled: Boolean = true,
     val paused: Boolean = false,
-    val speed: Double = 1.0
+    val speed: Double = 1.0,
+    // Operations systems: fuel market, credit and the current city event.
+    val fuelPrice: Double = 1.15,
+    val fuelReserve: Double = 0.0,
+    val creditLimit: Double = 3000.0,
+    val loan: Loan? = null,
+    val cityEvent: CityEvent? = null
 ) {
     /** Progress toward the next operator level, 0..1. */
     val levelProgress: Float
@@ -119,7 +125,8 @@ data class Vehicle(
     val assignedDriverId: String? = null,
     val currentContractId: String? = null,
     val heading: Float = 0f,            // bearing in degrees for marker rendering
-    val lowFuelTicks: Int = 0           // consecutive ticks with fuel < 15
+    val lowFuelTicks: Int = 0,          // consecutive ticks with fuel < 15
+    val serviceTicks: Int = 0           // remaining workshop cycles while MAINTENANCE
 ) {
     val isWorking: Boolean
         get() = status !in setOf(VehicleStatus.IDLE, VehicleStatus.BREAKDOWN, VehicleStatus.MAINTENANCE)
@@ -143,6 +150,62 @@ enum class ContractStatus {
     IN_PROGRESS,
     COMPLETED,
     FAILED
+}
+
+/** Freight tier: express is urgent and pays a premium, bulk carries more slack. */
+enum class ContractTier(val label: String) {
+    STANDARD("Standard"),
+    EXPRESS("Express"),
+    BULK("Bulk")
+}
+
+enum class CityEventKind(val label: String) {
+    RAIN("Rain"),
+    FESTIVAL("Festival"),
+    UNION_STRIKE("Union action"),
+    HEATWAVE("Heatwave"),
+    ROADWORKS("Roadworks")
+}
+
+data class CityEvent(
+    val kind: CityEventKind,
+    val label: String,
+    val ticksLeft: Int,
+    val speedFactor: Double = 1.0,
+    val demandFactor: Double = 1.0,
+    val rewardFactor: Double = 1.0
+) {
+    /** Short hint describing what the event does to the operation. */
+    val effectLabel: String
+        get() = buildList {
+            if (speedFactor < 0.99) add("−${((1 - speedFactor) * 100).toInt()}% road speed")
+            if (demandFactor > 1.01) add("+${((demandFactor - 1) * 100).toInt()}% demand")
+            if (demandFactor < 0.99) add("${((demandFactor - 1) * 100).toInt()}% demand")
+            if (rewardFactor > 1.01) add("+${((rewardFactor - 1) * 100).toInt()}% payouts")
+        }.joinToString(" · ")
+}
+
+data class Campaign(
+    val id: String,
+    val zoneId: String,
+    val ticksLeft: Int,
+    val spend: Double,
+    val demandBoost: Double = 0.0,
+    val rewardBoost: Double = 0.0
+) {
+    val isActive: Boolean get() = ticksLeft > 0
+}
+
+data class Loan(
+    val principal: Double,
+    val rate: Double,
+    val takenTick: Long,
+    val dueTick: Long,
+    val remaining: Double
+) {
+    val interestPerPayroll: Double get() = remaining * rate
+    val repaidFraction: Float
+        get() = if (principal <= 0.0) 1f else (1 - remaining / principal).toFloat().coerceIn(0f, 1f)
 }
 
 data class LocationPoint(
@@ -175,7 +238,8 @@ data class Contract(
     val createdAtTick: Long = 0L,
     val completedAtTick: Long? = null,
     val routeKm: Double = 0.0,
-    val zoneId: String = pickup.zoneId
+    val zoneId: String = pickup.zoneId,
+    val tier: ContractTier = ContractTier.STANDARD
 ) {
     val isActive: Boolean
         get() = status == ContractStatus.ASSIGNED || status == ContractStatus.IN_PROGRESS
@@ -215,7 +279,8 @@ enum class TransactionCategory(val label: String, val isIncome: Boolean) {
     TOW("Towing", false),
     EXPANSION("Territory", false),
     PURCHASE("Fleet purchase", false),
-    PENALTY("Penalties", false)
+    PENALTY("Penalties", false),
+    MARKETING("Marketing", false)
 }
 
 data class Transaction(

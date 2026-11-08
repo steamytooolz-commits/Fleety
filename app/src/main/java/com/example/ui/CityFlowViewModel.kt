@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.CityRoadNetwork
 import com.example.data.PocketBaseRepository
+import com.example.model.Campaign
 import com.example.model.CityZone
 import com.example.model.Contract
 import com.example.model.Incident
@@ -45,6 +46,7 @@ class CityFlowViewModel : ViewModel() {
     val incidentsMap: StateFlow<Map<String, Incident>> = repository.incidents
     val transactions: StateFlow<List<Transaction>> = repository.transactions
     val zones: StateFlow<List<CityZone>> = repository.zones
+    val campaigns: StateFlow<List<Campaign>> = repository.campaigns
 
     val vehiclesList: StateFlow<List<Vehicle>> = vehiclesMap.map { it.values.sortedBy { v -> v.plate } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -177,6 +179,26 @@ class CityFlowViewModel : ViewModel() {
 
     fun unlockZone(zoneId: String) {
         repository.unlockZone(zoneId)
+    }
+
+    fun buyDepotFuel(litres: Double) {
+        repository.buyDepotFuel(litres)
+    }
+
+    fun scheduleService(vehicleId: String) {
+        repository.scheduleService(vehicleId)
+    }
+
+    fun startCampaign(zoneId: String, budget: Double) {
+        repository.startCampaign(zoneId, budget)
+    }
+
+    fun takeLoan(amount: Double) {
+        repository.takeLoan(amount)
+    }
+
+    fun repayLoan(amount: Double) {
+        repository.repayLoan(amount)
     }
 
     fun setActiveEmergency(incident: Incident?) {

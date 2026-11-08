@@ -115,6 +115,7 @@ fun CityFlowApp(
     val incidents by viewModel.incidentsList.collectAsStateWithLifecycle()
     val zones by viewModel.zones.collectAsStateWithLifecycle()
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val campaigns by viewModel.campaigns.collectAsStateWithLifecycle()
     val connection by viewModel.connection.collectAsStateWithLifecycle()
 
     val currentTick by viewModel.currentTick.collectAsStateWithLifecycle()
@@ -140,6 +141,7 @@ fun CityFlowApp(
         incidents = incidents,
         zones = zones,
         transactions = transactions,
+        campaigns = campaigns,
         currentTick = currentTick,
         isPaused = isPaused,
         speedMultiplier = speedMultiplier,
@@ -165,7 +167,11 @@ fun CityFlowApp(
         onSpawnContract = { viewModel.spawnContract() },
         onPurchaseVehicle = { viewModel.purchaseVehicle(it) },
         onRefuelVehicle = { viewModel.refuelVehicle(it) },
-        onServiceVehicle = { viewModel.serviceVehicle(it) },
+        onServiceVehicle = { viewModel.scheduleService(it) },
+        onBuyFuel = { viewModel.buyDepotFuel(it) },
+        onStartCampaign = { zoneId, budget -> viewModel.startCampaign(zoneId, budget) },
+        onTakeLoan = { viewModel.takeLoan(it) },
+        onRepayLoan = { viewModel.repayLoan(it) },
         onHireStaff = { name, role, skill -> viewModel.hireStaff(name, role, skill) },
         onToggleShift = { viewModel.toggleStaffShift(it) },
         onAssignDriver = { staffId, vehicleId -> viewModel.assignDriver(staffId, vehicleId) },
@@ -194,6 +200,7 @@ fun CityFlowShell(
     incidents: List<Incident>,
     zones: List<CityZone>,
     transactions: List<Transaction>,
+    campaigns: List<com.example.model.Campaign> = emptyList(),
     currentTick: Long,
     isPaused: Boolean,
     speedMultiplier: Float,
@@ -220,6 +227,10 @@ fun CityFlowShell(
     onPurchaseVehicle: (VehicleClass) -> Unit = {},
     onRefuelVehicle: (String) -> Unit = {},
     onServiceVehicle: (String) -> Unit = {},
+    onBuyFuel: (Double) -> Unit = {},
+    onStartCampaign: (String, Double) -> Unit = { _, _ -> },
+    onTakeLoan: (Double) -> Unit = {},
+    onRepayLoan: (Double) -> Unit = {},
     onHireStaff: (String, StaffRole, Int) -> Unit = { _, _, _ -> },
     onToggleShift: (String) -> Unit = {},
     onAssignDriver: (String, String?) -> Unit = { _, _ -> },
@@ -275,6 +286,7 @@ fun CityFlowShell(
                         onOpenDispatch = { onScreen(AppScreen.DISPATCH) },
                         onOpenFleet = { onScreen(AppScreen.FLEET) },
                         onOpenCompany = { onScreen(AppScreen.COMPANY) },
+                        onBuyFuel = onBuyFuel,
                     )
 
                     AppScreen.DISPATCH -> DispatchScreen(
@@ -311,6 +323,9 @@ fun CityFlowShell(
                         onRefuelVehicle = onRefuelVehicle,
                         onServiceVehicle = onServiceVehicle,
                         onAssignDriver = onAssignDriver,
+                        fuelPrice = player.fuelPrice,
+                        fuelReserve = player.fuelReserve,
+                        onBuyFuel = onBuyFuel,
                     )
 
                     AppScreen.COMPANY -> CompanyScreen(
@@ -320,11 +335,15 @@ fun CityFlowShell(
                         contracts = contracts,
                         transactions = transactions,
                         zones = zones,
+                        campaigns = campaigns,
                         currentTick = currentTick,
                         onHireStaff = onHireStaff,
                         onToggleShift = onToggleShift,
                         onAssignDriver = onAssignDriver,
                         onUnlockZone = onUnlockZone,
+                        onStartCampaign = onStartCampaign,
+                        onTakeLoan = onTakeLoan,
+                        onRepayLoan = onRepayLoan,
                     )
                 }
             }

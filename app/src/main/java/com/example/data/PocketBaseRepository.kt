@@ -1,9 +1,14 @@
 package com.example.data
 
+import com.example.model.Campaign
+import com.example.model.CityEvent
+import com.example.model.CityEventKind
 import com.example.model.CityZone
 import com.example.model.Contract
 import com.example.model.ContractStatus
+import com.example.model.ContractTier
 import com.example.model.ContractType
+import com.example.model.Loan
 import com.example.model.Incident
 import com.example.model.IncidentType
 import com.example.model.LatLng
@@ -102,6 +107,9 @@ class PocketBaseRepository(
     private val _zones = MutableStateFlow<List<CityZone>>(roadNetwork.zones)
     val zones: StateFlow<List<CityZone>> = _zones.asStateFlow()
 
+    private val _campaigns = MutableStateFlow<List<Campaign>>(emptyList())
+    val campaigns: StateFlow<List<Campaign>> = _campaigns.asStateFlow()
+
     private val vehicleEvents = MutableSharedFlow<RealtimeEvent<Vehicle>>(64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val contractEvents = MutableSharedFlow<RealtimeEvent<Contract>>(64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val incidentEvents = MutableSharedFlow<RealtimeEvent<Incident>>(32, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -189,6 +197,18 @@ class PocketBaseRepository(
 
     fun unlockZone(zoneId: String) = sendIntent("UNLOCK_ZONE", JSONObject().put("zone_id", zoneId))
 
+    fun buyDepotFuel(litres: Double) = sendIntent("BUY_FUEL", JSONObject().put("litres", litres))
+
+    fun scheduleService(vehicleId: String) = sendIntent("SCHEDULE_SERVICE", JSONObject().put("vehicle_id", vehicleId))
+
+    fun startCampaign(zoneId: String, budget: Double) = sendIntent(
+        "START_CAMPAIGN", JSONObject().put("zone_id", zoneId).put("budget", budget),
+    )
+
+    fun takeLoan(amount: Double) = sendIntent("TAKE_LOAN", JSONObject().put("amount", amount))
+
+    fun repayLoan(amount: Double) = sendIntent("REPAY_LOAN", JSONObject().put("amount", amount))
+
     fun setAutoDispatch(enabled: Boolean) = sendIntent("SET_AUTO_DISPATCH", JSONObject().put("enabled", enabled))
 
     fun spawnContract() = sendIntent("SPAWN_CONTRACT")
@@ -272,6 +292,7 @@ class PocketBaseRepository(
         fetchAll("incidents", uid).forEach { record -> mapIncident(record)?.let { upsertIncident(it) } }
         fetchAll("city_state", uid).let { records -> mergeZones(records) }
         fetchAll("transactions", uid).forEach { record -> mapTransaction(record)?.let { addTransaction(it) } }
+        _campaigns.value = fetchAll("campaigns", uid).mapNotNull { mapCampaign(it) }.sortedByDescending { it.ticksLeft }
     }
 
     private suspend fun fetchAll(collection: String, ownerId: String): List<JSONObject> {
@@ -346,9 +367,9 @@ class PocketBaseRepository(
             "vehicles" -> mapVehicle(record)?.let { upsertVehicle(it) }
             "staff" -> mapStaff(record)?.let { upsertStaff(it) }
             "contracts" -> mapContract(record)?.let { upsertContract(it) }
-            "incidents" -> mapIncident(record)?.let { upsertIncident(it) }
-            "transactions" -> mapTransaction(record)?.let { addTransaction(it) }
-            "city_state" -> mergeZones(listOf(record))
+            "incidents" -> mapIncident(record)?.let { upsertIncident(it) }                "transactions" -> mapTransaction(record)?.let { addTransaction(it) }
+                "city_state" -> mergeZones(listOf(record))
+                "campaigns" -> mapCampaign(record)?.let { upsertCampaign(it) }
         }
     }
 
@@ -356,7 +377,7 @@ class PocketBaseRepository(
         try {
             request("POST", "/api/realtime", JSONObject().apply {
                 put("clientId", clientId)
-                put("subscriptions", JSONArray(listOf("players", "vehicles", "staff", "contracts", "incidents", "transactions", "city_state")))
+                put("subscriptions", JSONArray(listOf("players", "vehicles", "staff", "contracts", "incidents", "transactions", "city_state", "campaigns")))
             }, true)
         } catch (_: Exception) {
             // Polling keeps the snapshot fresh if realtime cannot subscribe.
@@ -402,6 +423,31 @@ class PocketBaseRepository(
             tick = o.optLong("tick", 0L),
             autoDispatchEnabled = o.optBoolean("auto_dispatch", true),
             paused = o.optBoolean("paused", false),
+            fuelPrice = o.optDouble("fuel_price", 1.15),
+            fuelReserve = o.optDouble("fuel_reserve", 0.0),
+            creditLimit = o.optDouble("credit_limit", 3000.0),
+            loan = o.optJSONObject("loan")?.let { l ->
+                val remaining = l.optDouble("remaining", 0.0)
+                if (remaining <= 0.01) null else Loan(
+                    principal = l.optDouble("principal", remaining),
+                    rate = l.optDouble("rate", 0.06),
+                    takenTick = l.optLong("taken_tick", 0L),
+                    dueTick = l.optLong("due_tick", 0L),
+                    remaining = remaining,
+                )
+            },
+            cityEvent = o.optJSONObject("active_event")?.let { e ->
+                val kind = runCatching { CityEventKind.valueOf(e.optString("kind").uppercase()) }.getOrNull()
+                val ticks = e.optInt("ticks_left", 0)
+                if (kind == null || ticks <= 0) null else CityEvent(
+                    kind = kind,
+                    label = e.optString("label").ifBlank { kind.label },
+                    ticksLeft = ticks,
+                    speedFactor = e.optDouble("speed_factor", 1.0),
+                    demandFactor = e.optDouble("demand_factor", 1.0),
+                    rewardFactor = e.optDouble("reward_factor", 1.0),
+                )
+            },
         )
     }
 
@@ -431,6 +477,7 @@ class PocketBaseRepository(
             currentContractId = o.optString("contract").ifBlank { null },
             heading = o.optDouble("heading", 0.0).toFloat(),
             lowFuelTicks = o.optInt("low_fuel_ticks", 0),
+            serviceTicks = o.optInt("service_ticks", 0),
         )
     }
 
@@ -481,6 +528,21 @@ class PocketBaseRepository(
             completedAtTick = o.optLong("completed_tick", 0L).takeIf { it > 0L },
             routeKm = o.optDouble("route_km", 0.0),
             zoneId = pickup.optString("zone_id").ifBlank { "cbd" },
+            tier = runCatching { ContractTier.valueOf(o.optString("tier").uppercase()) }
+                .getOrDefault(ContractTier.STANDARD),
+        )
+    }
+
+    private fun mapCampaign(o: JSONObject): Campaign? {
+        val zone = o.optString("zone_id")
+        if (zone.isBlank()) return null
+        return Campaign(
+            id = o.optString("ref_id").ifBlank { o.optString("id") },
+            zoneId = zone,
+            ticksLeft = o.optInt("ticks_left", 0),
+            spend = o.optDouble("spend", 0.0),
+            demandBoost = o.optDouble("demand_boost", 0.0),
+            rewardBoost = o.optDouble("reward_boost", 0.0),
         )
     }
 
@@ -513,6 +575,7 @@ class PocketBaseRepository(
             "expansion" -> TransactionCategory.EXPANSION
             "purchase" -> TransactionCategory.PURCHASE
             "penalty" -> TransactionCategory.PENALTY
+            "marketing" -> TransactionCategory.MARKETING
             "loan" -> TransactionCategory.LOAN
             else -> TransactionCategory.REVENUE
         }
@@ -584,6 +647,10 @@ class PocketBaseRepository(
 
     private fun removeIncident(id: String) {
         _incidents.value = _incidents.value.toMutableMap().apply { remove(id) }
+    }
+
+    private fun upsertCampaign(c: Campaign) {
+        _campaigns.value = (_campaigns.value.filterNot { it.id == c.id } + c).sortedByDescending { it.ticksLeft }
     }
 
     private fun addTransaction(t: Transaction) {

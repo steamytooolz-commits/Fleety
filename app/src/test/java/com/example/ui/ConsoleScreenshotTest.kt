@@ -14,10 +14,15 @@ import androidx.compose.ui.test.performClick
 import com.example.CityFlowShell
 import com.example.data.CityRoadNetwork
 import com.example.data.ConnectionState
+import com.example.model.Campaign
+import com.example.model.CityEvent
+import com.example.model.CityEventKind
 import com.example.model.CityZone
 import com.example.model.Contract
 import com.example.model.ContractStatus
+import com.example.model.ContractTier
 import com.example.model.ContractType
+import com.example.model.Loan
 import com.example.model.Incident
 import com.example.model.IncidentType
 import com.example.model.LatLng
@@ -86,6 +91,22 @@ class ConsoleScreenshotTest {
     }
 
     @Test
+    fun companyMarketing() {
+        render(AppScreen.COMPANY)
+        composeRule.onNodeWithText("Marketing", substring = true).performClick()
+        composeRule.waitForIdle()
+        save("07-company-marketing")
+    }
+
+    @Test
+    fun companyFinance() {
+        render(AppScreen.COMPANY)
+        composeRule.onNodeWithText("Finance", substring = true).performClick()
+        composeRule.waitForIdle()
+        save("08-company-finance")
+    }
+
+    @Test
     fun `navigation switches destination inside the shell`() {
         var screen by mutableStateOf(AppScreen.COMMAND)
         composeRule.setContent {
@@ -100,6 +121,7 @@ class ConsoleScreenshotTest {
                     incidents = incidents,
                     zones = zones,
                     transactions = transactions,
+                    campaigns = campaigns,
                     currentTick = 437L,
                     isPaused = false,
                     speedMultiplier = 1f,
@@ -134,6 +156,7 @@ class ConsoleScreenshotTest {
                     incidents = incidents,
                     zones = zones,
                     transactions = transactions,
+                    campaigns = campaigns,
                     currentTick = 437L,
                     isPaused = false,
                     speedMultiplier = 1f,
@@ -170,6 +193,7 @@ class ConsoleScreenshotTest {
                     incidents = incidents,
                     zones = zones,
                     transactions = transactions,
+                    campaigns = campaigns,
                     currentTick = 437L,
                     isPaused = false,
                     speedMultiplier = 2f,
@@ -214,6 +238,18 @@ class ConsoleScreenshotTest {
         contractsFailed = 4,
         distanceKm = 1286.0,
         tick = 437,
+        fuelPrice = 1.27,
+        fuelReserve = 340.0,
+        creditLimit = 10500.0,
+        loan = Loan(principal = 5000.0, rate = 0.06, takenTick = 300, dueTick = 540, remaining = 3200.0),
+        cityEvent = CityEvent(
+            kind = CityEventKind.FESTIVAL,
+            label = "Street festival — crowds downtown",
+            ticksLeft = 18,
+            speedFactor = 0.80,
+            demandFactor = 1.55,
+            rewardFactor = 1.25,
+        ),
     )
 
     private val staff = listOf(
@@ -272,7 +308,7 @@ class ConsoleScreenshotTest {
             dropoff = LocationPoint(-33.9290, 18.4400, "Salt River Depot", "woodstock", "WAREHOUSE"),
             payload = Payload(1850.0, description = "Freight pallet"),
             reward = 612.0, deadlineTick = 471L, status = ContractStatus.OPEN,
-            createdAtTick = 436L, routeKm = 9.8, zoneId = "cbd",
+            createdAtTick = 436L, routeKm = 9.8, zoneId = "cbd", tier = ContractTier.BULK,
         ),
         Contract(
             id = "ctr_103", type = ContractType.PARCEL,
@@ -280,7 +316,7 @@ class ConsoleScreenshotTest {
             dropoff = LocationPoint(-33.9070, 18.4200, "Clock Tower Precinct", "waterfront", "TRANSIT_HUB"),
             payload = Payload(8.0, description = "Parcel"),
             reward = 94.2, deadlineTick = 462L, status = ContractStatus.OPEN,
-            createdAtTick = 437L, routeKm = 3.1, zoneId = "cbd",
+            createdAtTick = 437L, routeKm = 3.1, zoneId = "cbd", tier = ContractTier.EXPRESS,
         ),
         Contract(
             id = "ctr_104", type = ContractType.RIDESHARE,
@@ -320,6 +356,11 @@ class ConsoleScreenshotTest {
         Transaction("tx_6", tick = 418, category = TransactionCategory.REVENUE, amount = 94.2, description = "Completed parcel ctr_094"),
         Transaction("tx_7", tick = 410, category = TransactionCategory.EXPANSION, amount = -6500.0, description = "Unlocked Woodstock & Salt River"),
         Transaction("tx_8", tick = 402, category = TransactionCategory.LOAN, amount = 5000.0, description = "Emergency operating loan"),
+    )
+
+    private val campaigns = listOf(
+        Campaign("cmp_1", "cbd", ticksLeft = 22, spend = 3000.0, demandBoost = 0.5, rewardBoost = 0.25),
+        Campaign("cmp_2", "waterfront", ticksLeft = 0, spend = 2500.0, demandBoost = 0.42, rewardBoost = 0.21),
     )
 
     private val zones: List<CityZone> = network.zones.mapIndexed { index, zone ->

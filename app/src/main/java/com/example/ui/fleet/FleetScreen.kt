@@ -110,6 +110,9 @@ fun FleetScreen(
     onRefuelVehicle: (vehicleId: String) -> Unit,
     onServiceVehicle: (vehicleId: String) -> Unit,
     onAssignDriver: (staffId: String, vehicleId: String?) -> Unit,
+    fuelPrice: Double = 1.15,
+    fuelReserve: Double = 0.0,
+    onBuyFuel: (litres: Double) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var filterIndex by remember { mutableIntStateOf(0) }
@@ -199,6 +202,34 @@ fun FleetScreen(
                         "${vehicles.sumOf { it.mileage }.toInt()} km",
                         style = NumericStyle,
                         color = Slate,
+                    )
+                }
+            }
+        }
+
+        item("depot") {
+            val depotPrice = fuelPrice * 0.92
+            val room = (800.0 - fuelReserve).coerceAtLeast(0.0)
+            val litres = minOf(200.0, room)
+            CityCard(contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconTile(icon = Icons.Rounded.LocalGasStation, tint = Iris, size = 36)
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("DEPOT RESERVE", style = MaterialTheme.typography.labelSmall, color = Slate)
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text("${fuelReserve.toInt()} L", style = NumericStyle.copy(fontSize = 16.sp), color = Paper)
+                            Text(
+                                " · ${money(depotPrice, decimals = true)}/L bulk (pump ${money(fuelPrice, decimals = true)})",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Muted,
+                            )
+                        }
+                    }
+                    SecondaryButton(
+                        text = if (litres >= 1.0) "Buy ${litres.toInt()} L" else "Full",
+                        onClick = { onBuyFuel(200.0) },
+                        enabled = litres >= 1.0,
                     )
                 }
             }
@@ -418,10 +449,11 @@ private fun VehicleCard(
                 modifier = Modifier.weight(1f),
             )
             SecondaryButton(
-                text = "Service ${money(220.0)}",
+                text = if (vehicle.status == VehicleStatus.MAINTENANCE) "In bay ${vehicle.serviceTicks}c"
+                    else "Workshop ${money(198.0)}",
                 icon = Icons.Rounded.Build,
                 onClick = onService,
-                enabled = vehicle.condition < 99.0,
+                enabled = vehicle.status == VehicleStatus.IDLE && vehicle.condition < 99.0,
                 modifier = Modifier.weight(1f),
             )
         }

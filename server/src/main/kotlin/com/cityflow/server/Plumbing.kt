@@ -127,7 +127,7 @@ class PocketBaseStore(
         return users.mapNotNull { el ->
             val u = el.jsonObject
             val pid = u["id"]!!.jsonPrimitive.content
-            val data = listOf("vehicles", "staff", "contracts", "incidents", "transactions", "city_state").associateWith { coll ->
+            val data = listOf("vehicles", "staff", "contracts", "incidents", "transactions", "city_state", "campaigns").associateWith { coll ->
                 (get("/api/collections/$coll/records?perPage=500&filter=" + urlEncode("owner=\"$pid\""))["items"]?.jsonArray ?: JsonArray(emptyList()))
             }
             // Remember PocketBase record ids so a restarted process updates instead of re-creating.
@@ -188,6 +188,7 @@ class PocketBaseStore(
                 driverId = v["assigned_driver"]?.jsonPrimitive?.contentOrNull?.ifBlank { null },
                 contractId = v["contract"]?.jsonPrimitive?.contentOrNull?.ifBlank { null },
                 lowFuelTicks = v.num("low_fuel_ticks", 0.0).toInt(), heading = v.num("heading", 0.0),
+                serviceTicks = v.num("service_ticks", 0.0).toInt(),
             )
         }
         val contracts = arr("contracts").map { it.jsonObject }.mapNotNull { c ->
@@ -206,6 +207,7 @@ class PocketBaseStore(
                 driverId = c["assigned_driver"]?.jsonPrimitive?.contentOrNull?.ifBlank { null },
                 createdAtTick = c.num("created_tick", 0.0).toLong(), completedAtTick = c["completed_tick"]?.jsonPrimitive?.longOrNull,
                 routeKm = c.num("route_km", 0.0), zoneId = pu.str("zone_id"),
+                tier = runCatching { ContractTier.valueOf(c.str("tier").uppercase()) }.getOrDefault(ContractTier.STANDARD),
             )
         }
         return World(
@@ -234,6 +236,36 @@ class PocketBaseStore(
             lifetimeCompleted = player.num("contracts_completed", 0.0).toInt(),
             lifetimeFailed = player.num("contracts_failed", 0.0).toInt(),
             lifetimeRevenue = player.num("total_revenue", 0.0),
+            fuelPrice = player.num("fuel_price", 1.15).coerceIn(0.9, 1.6),
+            fuelReserve = player.num("fuel_reserve", 0.0),
+            creditLimit = player.num("credit_limit", Economy.creditLimit(player.num("contracts_completed", 0.0).toInt())),
+            loan = (player["loan"] as? JsonObject)?.let { l ->
+                val remaining = l.num("remaining", 0.0)
+                if (remaining <= 0.01) null else Loan(
+                    principal = l.num("principal", remaining), rate = l.num("rate", 0.06),
+                    takenTick = l.num("taken_tick", 0.0).toLong(), dueTick = l.num("due_tick", 0.0).toLong(),
+                    remaining = remaining,
+                )
+            },
+            campaigns = arr("campaigns").mapNotNull { el ->
+                val c = el.jsonObject
+                val zone = c.str("zone_id")
+                val ticks = c.num("ticks_left", 0.0).toInt()
+                if (zone.isBlank() || ticks <= 0) null else Campaign(
+                    id = c.str("ref_id").ifBlank { c.str("id") }, zoneId = zone, ticksLeft = ticks,
+                    spend = c.num("spend", 0.0), demandBoost = c.num("demand_boost", 0.0),
+                    rewardBoost = c.num("reward_boost", 0.0),
+                )
+            },
+            cityEvent = (player["active_event"] as? JsonObject)?.let { e ->
+                val kind = runCatching { EventKind.valueOf(e.str("kind").uppercase()) }.getOrNull()
+                val ticks = e.num("ticks_left", 0.0).toInt()
+                if (kind == null || ticks <= 0) null else CityEvent(
+                    kind = kind, label = e.str("label").ifBlank { kind.name.lowercase() }, ticksLeft = ticks,
+                    speedFactor = e.num("speed_factor", 1.0), demandFactor = e.num("demand_factor", 1.0),
+                    rewardFactor = e.num("reward_factor", 1.0),
+                )
+            },
         )
     }
 
@@ -256,6 +288,16 @@ class PocketBaseStore(
             put("tick", world.tick); put("seed", world.seed); put("last_payroll_tick", world.lastPayrollTick)
             put("auto_dispatch", world.autoDispatch); put("paused", world.paused); put("speed", world.speed)
             put("base_location", buildJsonObject { put("lat", world.base.lat); put("lng", world.base.lng) })
+            put("fuel_price", round(world.fuelPrice * 100) / 100.0); put("fuel_reserve", round(world.fuelReserve * 10) / 10.0)
+            put("credit_limit", round(Economy.creditLimit(completed) * 100) / 100.0)
+            put("loan", world.loan?.let { l -> buildJsonObject {
+                put("principal", l.principal); put("rate", l.rate); put("taken_tick", l.takenTick)
+                put("due_tick", l.dueTick); put("remaining", round(l.remaining * 100) / 100.0)
+            } } ?: JsonNull)
+            put("active_event", world.cityEvent?.let { e -> buildJsonObject {
+                put("kind", e.kind.name.lowercase()); put("label", e.label); put("ticks_left", e.ticksLeft)
+                put("speed_factor", e.speedFactor); put("demand_factor", e.demandFactor); put("reward_factor", e.rewardFactor)
+            } } ?: JsonNull)
         }
         write("PATCH", "/api/collections/players/records/$pid", playerFields.toString())
 
@@ -264,7 +306,7 @@ class PocketBaseStore(
             put("plate", v.plate); put("fuel", v.fuel); put("condition", v.condition); put("mileage", v.mileageKm)
             put("status", v.status.name.lowercase()); put("route_progress", v.routeProgress)
             put("route_km", v.routeKm); put("distance_travelled_km", v.travelledKm); put("low_fuel_ticks", v.lowFuelTicks)
-            put("heading", v.heading)
+            put("heading", v.heading); put("service_ticks", v.serviceTicks)
             put("current_location", buildJsonObject { put("lat", v.location.lat); put("lng", v.location.lng) })
             put("current_route", buildJsonArray { v.route.forEach { p -> add(buildJsonArray { add(p.lat); add(p.lng) }) } })
             put("assigned_driver", v.driverId); put("contract", v.contractId)
@@ -281,7 +323,7 @@ class PocketBaseStore(
             put("dropoff", buildJsonObject { put("lat", c.dropoff.lat); put("lng", c.dropoff.lng); put("label", c.dropoff.label); put("zone_id", c.dropoff.zoneId) })
             put("payload", buildJsonObject { put("weight_kg", c.payload.weightKg); put("requires_refrigeration", c.payload.requiresRefrigeration) })
             put("reward", c.reward); put("deadline_tick", c.deadlineTick); put("created_tick", c.createdAtTick)
-            put("completed_tick", c.completedAtTick); put("route_km", c.routeKm)
+            put("completed_tick", c.completedAtTick); put("route_km", c.routeKm); put("tier", c.tier.name.lowercase())
             put("assigned_vehicle", c.vehicleId); put("assigned_driver", c.driverId)
         })
         for (i in world.incidents) upsert("incidents", i.id, pid, buildJsonObject {
@@ -304,6 +346,10 @@ class PocketBaseStore(
             put("unlocked", z.unlocked); put("unlock_cost", z.unlockCost)
             put("completion_threshold", z.completionThreshold); put("completed_contracts", z.completed)
             put("failed_contracts", z.failed); put("unmet_demand", z.unmet)
+        })
+        for (c in world.campaigns) upsert("campaigns", c.id, pid, buildJsonObject {
+            put("owner", pid); put("ref_id", c.id); put("zone_id", c.zoneId); put("ticks_left", c.ticksLeft)
+            put("spend", c.spend); put("demand_boost", c.demandBoost); put("reward_boost", c.rewardBoost)
         })
     }
 

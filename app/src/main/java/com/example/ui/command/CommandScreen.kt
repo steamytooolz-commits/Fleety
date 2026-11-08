@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.LocalGasStation
 import androidx.compose.material.icons.rounded.LocalShipping
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -56,6 +57,7 @@ import com.example.ui.components.CountBadge
 import com.example.ui.components.Dot
 import com.example.ui.components.IconTile
 import com.example.ui.components.MeterRow
+import com.example.ui.components.SecondaryButton
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatCard
 import com.example.ui.components.StatusChip
@@ -110,6 +112,7 @@ fun CommandScreen(
     onOpenDispatch: () -> Unit,
     onOpenFleet: () -> Unit,
     onOpenCompany: () -> Unit,
+    onBuyFuel: (litres: Double) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val openContracts = contracts.filter { it.status == ContractStatus.OPEN }
@@ -158,6 +161,43 @@ fun CommandScreen(
                 }
                 Spacer(Modifier.width(8.dp))
                 LevelBadge(level = player.level, progress = player.levelProgress, reputation = player.reputation)
+            }
+        }
+
+        player.cityEvent?.let { event ->
+            item("city_event") {
+                val accent = when (event.kind) {
+                    com.example.model.CityEventKind.FESTIVAL -> Mint
+                    com.example.model.CityEventKind.UNION_STRIKE -> Coral
+                    com.example.model.CityEventKind.ROADWORKS -> Amber
+                    com.example.model.CityEventKind.HEATWAVE -> Amber
+                    com.example.model.CityEventKind.RAIN -> Sky
+                }
+                CityCard(accent = accent) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconTile(icon = Icons.Rounded.WarningAmber, tint = accent, size = 38)
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("CITY EVENT", style = MaterialTheme.typography.labelSmall, color = accent)
+                            Text(event.label, style = MaterialTheme.typography.titleSmall, color = Paper)
+                            if (event.effectLabel.isNotBlank()) {
+                                Text(
+                                    event.effectLabel,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Slate,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "${event.ticksLeft}c left",
+                            style = NumericStyle.copy(fontSize = 12.sp),
+                            color = accent,
+                        )
+                    }
+                }
             }
         }
 
@@ -213,6 +253,36 @@ fun CommandScreen(
                     accent = if (atRisk > 0) Coral else Iris,
                     modifier = Modifier.weight(1f),
                 )
+            }
+        }
+
+        item("depot") {
+            val depotPrice = player.fuelPrice * 0.92
+            val topUp = 200.0
+            val room = (800.0 - player.fuelReserve).coerceAtLeast(0.0)
+            val litres = minOf(topUp, room)
+            CityCard(contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconTile(icon = Icons.Rounded.LocalGasStation, tint = Iris, size = 36)
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("DEPOT FUEL", style = MaterialTheme.typography.labelSmall, color = Slate)
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(money(depotPrice, decimals = true), style = NumericStyle, color = Paper)
+                            Text("/L · pump ${money(player.fuelPrice, decimals = true)}", style = MaterialTheme.typography.labelSmall, color = Muted)
+                        }
+                        Text(
+                            "${player.fuelReserve.toInt()} L in reserve · bulk saves 8%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Slate,
+                        )
+                    }
+                    SecondaryButton(
+                        text = if (litres >= 1.0) "Buy ${litres.toInt()} L" else "Full",
+                        onClick = { onBuyFuel(topUp) },
+                        enabled = litres >= 1.0,
+                    )
+                }
             }
         }
 

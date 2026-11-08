@@ -180,6 +180,122 @@ class SimulationTest {
     }
 
     @Test
+    fun `freight tiers price express and bulk above standard`() {
+        val standard = Economy.reward(ContractType.PARCEL, 10.0, 20.0, 1.0, ContractTier.STANDARD)
+        val express = Economy.reward(ContractType.PARCEL, 10.0, 20.0, 1.0, ContractTier.EXPRESS)
+        val bulk = Economy.reward(ContractType.PARCEL, 10.0, 20.0, 1.0, ContractTier.BULK)
+        assertTrue(express > standard * 1.5, "express should carry a premium")
+        assertTrue(bulk > standard)
+        // The board actually offers tiers, not just a pricing curve.
+        val world = City.initialWorld("p1").copy(campaigns = listOf(Campaign("c1", "cbd", 10, 6000.0, 3.0, 0.0)))
+        val tiers = (1L..60L).flatMap { tick ->
+            Demand.generate(world.copy(tick = tick - 1, contracts = emptyList()), tick, cfg).map { it.tier }
+        }.toSet()
+        assertTrue(ContractTier.EXPRESS in tiers, "express work should appear on the board")
+        assertTrue(ContractTier.STANDARD in tiers)
+    }
+
+    @Test
+    fun `depot purchase is discounted and drawn down before pump fuel`() {
+        val routes = TestRoutes { _, _ -> route }
+        val world = testWorld(listOf(Vehicle("v1", VehicleClass.VAN, "T1", fuel = 20.0, location = City.base)), emptyList())
+            .copy(cash = 5000.0, autoDispatch = false, fuelPrice = 1.20, fuelReserve = 0.0)
+        val engine = Engine(cfg)
+        val buy = engine.apply(world, Intent("buy-1", "BUY_FUEL", kotlinx.serialization.json.buildJsonObject {
+            put("litres", kotlinx.serialization.json.JsonPrimitive(200.0))
+        }), routes)
+        assertTrue(buy.accepted)
+        assertEquals(200.0, buy.world.fuelReserve, 0.001)
+        assertEquals(5000.0 - 200.0 * 1.20 * 0.92, buy.world.cash, 0.01)
+
+        val refuel = engine.apply(buy.world, Intent("refuel-1", "REFUEL", kotlinx.serialization.json.buildJsonObject {
+            put("vehicle_id", kotlinx.serialization.json.JsonPrimitive("v1"))
+        }), routes)
+        assertTrue(refuel.accepted)
+        assertEquals(100.0, refuel.world.vehicles.first().fuel, 0.001)
+        // The van tank holds 70 L and was 20% full: 56 L comes from the reserve, nothing from the pump.
+        assertEquals(144.0, refuel.world.fuelReserve, 0.001)
+        assertEquals(buy.world.cash, refuel.world.cash, 0.001)
+    }
+
+    @Test
+    fun `campaign raises demand in its zone`() {
+        val base = City.initialWorld("p1")
+        fun count(world: World): Int = (1L..120L).sumOf { tick ->
+            Demand.generate(world.copy(tick = tick - 1, contracts = emptyList()), tick, cfg).count { it.zoneId == "cbd" }
+        }
+        val plain = count(base)
+        val boosted = count(base.copy(campaigns = listOf(Campaign("c1", "cbd", 120, 6000.0, 1.0, 0.0))))
+        assertTrue(boosted > plain, "campaign should raise demand ($plain -> $boosted)")
+    }
+
+    @Test
+    fun `loan draws against the credit line and charges interest on payroll`() {
+        val routes = TestRoutes { _, _ -> route }
+        val engine = Engine(cfg)
+        var world = testWorld(listOf(Vehicle("v1", VehicleClass.VAN, "T1", fuel = 90.0, location = City.base)), emptyList())
+            .copy(cash = 1000.0, creditLimit = 400.0, tick = 0, lastPayrollTick = 0, autoDispatch = false)
+        fun take(key: String) = Intent(key, "TAKE_LOAN", kotlinx.serialization.json.buildJsonObject {
+            put("amount", kotlinx.serialization.json.JsonPrimitive(5000.0))
+        })
+        assertFalse(engine.apply(world, take("loan-1"), routes).accepted, "credit line is enforced")
+
+        world = world.copy(creditLimit = 5000.0)
+        val drawn = engine.apply(world, take("loan-2"), routes)
+        assertTrue(drawn.accepted)
+        assertEquals(6000.0, drawn.world.cash, 0.001)
+        assertNotNull(drawn.world.loan)
+        assertFalse(engine.apply(drawn.world, take("loan-3"), routes).accepted, "one operating loan at a time")
+
+        val paid = engine.step(drawn.world.copy(tick = 29, lastPayrollTick = 0, cash = 10000.0), routes).world
+        assertTrue(paid.ledger.any { it.category == TxCategory.LOAN && it.description.contains("interest") })
+        assertTrue((paid.loan?.remaining ?: 0.0) < 5000.0, "scheduled repayment should reduce the principal")
+    }
+
+    @Test
+    fun `workshop service restores condition after the bay countdown`() {
+        val routes = TestRoutes { _, _ -> route }
+        var world = testWorld(
+            listOf(Vehicle("v1", VehicleClass.VAN, "T1", fuel = 90.0, condition = 40.0, location = City.base)),
+            listOf(Staff("m1", "M", Role.MECHANIC, 0.0, 9, StaffStatus.ON_SHIFT)),
+        ).copy(cash = 2000.0, autoDispatch = false)
+        val engine = Engine(cfg)
+        val booked = engine.apply(world, Intent("svc-1", "SCHEDULE_SERVICE", kotlinx.serialization.json.buildJsonObject {
+            put("vehicle_id", kotlinx.serialization.json.JsonPrimitive("v1"))
+        }), routes)
+        assertTrue(booked.accepted)
+        assertEquals(VehicleStatus.MAINTENANCE, booked.world.vehicles.first().status)
+        assertTrue(booked.world.ledger.any { it.category == TxCategory.REPAIR })
+        assertTrue(booked.world.vehicles.first().serviceTicks in 2..cfg.serviceTicks)
+
+        var after = booked.world
+        repeat(6) { after = engine.step(after, routes).world }
+        assertEquals(VehicleStatus.IDLE, after.vehicles.first().status)
+        assertEquals(100.0, after.vehicles.first().condition, 0.001)
+    }
+
+    @Test
+    fun `city events spawn on schedule and slow every leg`() {
+        val routes = TestRoutes { _, _ -> route }
+        val staff = Staff("d1", "D", Role.DRIVER, 0.0, 8, StaffStatus.ON_SHIFT, "v1")
+        val moving = Vehicle("v1", VehicleClass.VAN, "T1", fuel = 90.0, location = route.first(), route = route,
+            routeKm = Geo.total(route), status = VehicleStatus.EN_ROUTE_TO_DROPOFF, contractId = "c1", driverId = "d1")
+        val contract = Contract("c1", ContractType.PARCEL, City.pois[2], City.pois[3], Payload(5.0), 90.0, 500,
+            ContractStatus.IN_PROGRESS, "v1", "d1")
+        fun world(tick: Long, event: CityEvent?) = testWorld(listOf(moving), listOf(staff))
+            .copy(tick = tick, contracts = listOf(contract), cityEvent = event, autoDispatch = false)
+        val engine = Engine(cfg)
+        val clearKm = engine.step(world(200, null), routes).world.vehicles.first().travelledKm
+        val rainKm = engine.step(world(200, CityEvent(EventKind.RAIN, "Rain", 10, speedFactor = 0.5)), routes)
+            .world.vehicles.first().travelledKm
+        assertTrue(rainKm < clearKm * 0.75, "rain should slow the leg ($clearKm -> $rainKm)")
+
+        val scheduled = engine.step(world(119, null), routes)
+        assertNotNull(scheduled.world.cityEvent, "an event should start at the scheduled tick")
+        assertTrue(scheduled.events.any { it.type == "city" })
+    }
+
+    @Test
     fun `monte carlo is reproducible and ordered`() {
         val world = City.initialWorld("p1").copy(cash = 20000.0)
         val req = ExpansionRequest(additionalVehicles = 2, additionalDrivers = 2, marketingSpend = 2000.0, days = 30, iterations = 200)

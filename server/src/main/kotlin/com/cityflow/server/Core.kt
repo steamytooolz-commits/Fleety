@@ -26,9 +26,14 @@ import kotlin.math.*
     val route: List<LngLat> = emptyList(), val routeKm: Double = 0.0, val travelledKm: Double = 0.0,
     val routeProgress: Double = 0.0, val driverId: String? = null, val contractId: String? = null,
     val loadingTicks: Int = 0, val lowFuelTicks: Int = 0, val heading: Double = 0.0,
+    /** Remaining workshop ticks while status is MAINTENANCE. */
+    val serviceTicks: Int = 0,
 )
 @Serializable enum class ContractType { RIDESHARE, FOOD, PARCEL, CARGO }
 @Serializable enum class ContractStatus { OPEN, ASSIGNED, IN_PROGRESS, COMPLETED, FAILED }
+
+/** Work tier on the freight exchange: express pays a premium for a tighter deadline. */
+@Serializable enum class ContractTier { STANDARD, EXPRESS, BULK }
 @Serializable enum class PoiType { RESTAURANT, RESIDENTIAL, TRANSIT_HUB, COMMERCIAL, WAREHOUSE, INDUSTRIAL, FUEL_STATION }
 @Serializable data class Place(val lat: Double, val lng: Double, val label: String, val zoneId: String, val poiType: PoiType) {
     fun point() = LngLat(lng, lat)
@@ -39,6 +44,7 @@ import kotlin.math.*
     val reward: Double, val deadlineTick: Long, val status: ContractStatus = ContractStatus.OPEN,
     val vehicleId: String? = null, val driverId: String? = null, val createdAtTick: Long = 0,
     val completedAtTick: Long? = null, val routeKm: Double = 0.0, val zoneId: String = pickup.zoneId,
+    val tier: ContractTier = ContractTier.STANDARD,
 )
 @Serializable enum class IncidentType { LOW_FUEL, BREAKDOWN, ACCIDENT, STRIKE, TRAFFIC_JAM, FATIGUE }
 @Serializable data class Incident(
@@ -46,7 +52,25 @@ import kotlin.math.*
     val zoneId: String? = null, val type: IncidentType, val severity: Int, val resolved: Boolean = false,
     val costIfIgnored: Double = 0.0, val description: String = "", val createdTick: Long = 0,
 )
-@Serializable enum class TxCategory { REVENUE, FUEL, SALARY, REPAIR, TOW, EXPANSION, PURCHASE, PENALTY, LOAN }
+@Serializable enum class TxCategory { REVENUE, FUEL, SALARY, REPAIR, TOW, EXPANSION, PURCHASE, PENALTY, LOAN, MARKETING }
+
+/** City-wide disruption with modifiers applied to speed, demand and payouts. */
+@Serializable enum class EventKind { RAIN, FESTIVAL, UNION_STRIKE, HEATWAVE, ROADWORKS }
+@Serializable data class CityEvent(
+    val kind: EventKind, val label: String, val ticksLeft: Int,
+    val speedFactor: Double = 1.0, val demandFactor: Double = 1.0, val rewardFactor: Double = 1.0,
+)
+
+/** Paid demand generation for one zone: raises contract volume and payout while it runs. */
+@Serializable data class Campaign(
+    val id: String, val zoneId: String, val ticksLeft: Int, val spend: Double,
+    val demandBoost: Double = 0.0, val rewardBoost: Double = 0.0,
+)
+
+/** Operating credit. Interest is charged every payroll and principal auto-repays when cash allows. */
+@Serializable data class Loan(
+    val principal: Double, val rate: Double, val takenTick: Long, val dueTick: Long, val remaining: Double,
+)
 @Serializable data class Transaction(
     val id: String, val tick: Long, val category: TxCategory, val amount: Double,
     val contractId: String? = null, val description: String = "", val idempotencyKey: String? = null,
@@ -65,6 +89,11 @@ import kotlin.math.*
     val paused: Boolean = false, val stepOnce: Boolean = false, val speed: Double = 1.0,
     // Lifetime progression. The contract list is windowed, so totals are carried separately.
     val lifetimeCompleted: Int = 0, val lifetimeFailed: Int = 0, val lifetimeRevenue: Double = 0.0,
+    // Fuel market: pump price drifts, depot reserve is bought in bulk at a discount.
+    val fuelPrice: Double = 1.15, val fuelReserve: Double = 0.0,
+    // Credit line derived from completed work; one operating loan at a time.
+    val creditLimit: Double = 3000.0, val loan: Loan? = null,
+    val campaigns: List<Campaign> = emptyList(), val cityEvent: CityEvent? = null,
 )
 data class Event(val type: String, val description: String, val entityId: String? = null, val amount: Double = 0.0)
 data class TickResult(val world: World, val events: List<Event>)
@@ -77,6 +106,14 @@ data class SimConfig(
     val forcedRestTicks: Int = 60, val fuelPrice: Double = 1.15, val refuelFee: Double = 25.0,
     val maintenanceCost: Double = 220.0, val towCost: Double = 350.0, val fieldRepairCost: Double = 520.0,
     val trafficJam: Double = 0.8,
+    // Feature tuning: freight tiers, depot fuel, campaigns, credit and city events.
+    val expressReward: Double = 1.7, val expressDeadline: Double = 0.65,
+    val bulkReward: Double = 1.3, val bulkDeadline: Double = 1.15,
+    val depotCapacity: Double = 800.0, val depotDiscount: Double = 0.08, val depotLitreStep: Double = 200.0,
+    val campaignTicks: Int = 60, val campaignMinSpend: Double = 1500.0, val campaignMaxSpend: Double = 12000.0,
+    val loanRate: Double = 0.06, val loanTermTicks: Long = 240, val creditBase: Double = 3000.0, val creditPerContract: Double = 150.0,
+    val creditCap: Double = 25000.0, val eventEveryTicks: Long = 120, val eventTicks: Int = 60,
+    val fuelDriftEveryTicks: Long = 20, val serviceTicks: Int = 7,
 )
 
 data class VehicleSpec(val label: String, val tank: Double, val burn: Double, val capacity: Double, val upkeep: Double, val price: Double, val speed: Double, val wearPerKm: Double)
@@ -234,12 +271,15 @@ object City {
 }
 
 object Economy {
-    fun reward(type: ContractType, km: Double, weight: Double, demand: Double): Double {
+    fun reward(type: ContractType, km: Double, weight: Double, demand: Double, tier: ContractTier = ContractTier.STANDARD): Double {
         val base = when (type) { ContractType.RIDESHARE -> 45.0; ContractType.FOOD -> 60.0; ContractType.PARCEL -> 55.0; ContractType.CARGO -> 180.0 }
         val perKm = when (type) { ContractType.RIDESHARE -> 6.5; ContractType.FOOD -> 7.5; ContractType.PARCEL -> 6.0; ContractType.CARGO -> 9.0 }
         val weightPart = if (type == ContractType.CARGO) weight * 0.04 else 0.0
-        return round((base + km * perKm + weightPart) * (1 + (demand - 1) * 0.2) * 100) / 100
+        val tierPart = when (tier) { ContractTier.STANDARD -> 1.0; ContractTier.EXPRESS -> 1.7; ContractTier.BULK -> 1.3 }
+        return round((base + km * perKm + weightPart) * (1 + (demand - 1) * 0.2) * tierPart * 100) / 100
     }
+    /** Credit line available to an operator with this many completed jobs. */
+    fun creditLimit(completed: Int): Double = (3000.0 + completed * 150.0).coerceAtMost(25000.0)
     fun fuelPctFor(cls: VehicleClass, km: Double): Double {
         val s = Fleet.of(cls); return km / (s.speed / 60.0) * s.burn
     }
@@ -300,10 +340,15 @@ object Demand {
         var budget = (cfg.maxOpenContracts - world.contracts.count { it.status == ContractStatus.OPEN || it.status == ContractStatus.ASSIGNED || it.status == ContractStatus.IN_PROGRESS }).coerceAtLeast(0)
         if (budget == 0) return emptyList()
         val out = mutableListOf<Contract>()
+        val cityEvent = world.cityEvent?.takeIf { it.ticksLeft > 0 }
         for (zone in unlocked) {
             if (budget <= 0) break
             val rng = Rng(Rng.seed(world.seed, tick, zone.zoneId))
-            val n = rng.poisson(cfg.demandPerTickPerZone * zone.demandMultiplier).coerceAtMost(budget)
+            // Campaigns and city events both move demand for this zone.
+            val campaign = world.campaigns.firstOrNull { it.zoneId == zone.zoneId && it.ticksLeft > 0 }
+            val demand = zone.demandMultiplier * (cityEvent?.demandFactor ?: 1.0) *
+                (1.0 + (campaign?.demandBoost ?: 0.0))
+            val n = rng.poisson(cfg.demandPerTickPerZone * demand).coerceAtMost(budget)
             repeat(n) { i ->
                 val type = when {
                     rng.nextDouble() < 0.35 -> ContractType.RIDESHARE
@@ -331,11 +376,25 @@ object Demand {
                     ContractType.CARGO -> Payload(rng.range(250.0, 2400.0), false, "Freight pallet")
                 }
                 val km = Geo.km(pickup.point(), drop.point()) * 1.35
-                val deadline = tick + max(45, (km / 40.0 * 60 * 2.2).toLong())
+                // Express work is urgent; bulk work is heavier but gives more slack.
+                val tierRoll = rng.nextDouble()
+                val tier = when {
+                    type == ContractType.CARGO && tierRoll < 0.18 -> ContractTier.BULK
+                    tierRoll < 0.32 -> ContractTier.EXPRESS
+                    else -> ContractTier.STANDARD
+                }
+                val baseDeadline = tick + max(45, (km / 40.0 * 60 * 2.2).toLong())
+                val deadline = when (tier) {
+                    ContractTier.EXPRESS -> tick + max(30, ((baseDeadline - tick) * cfg.expressDeadline).toLong())
+                    ContractTier.BULK -> tick + ((baseDeadline - tick) * cfg.bulkDeadline).toLong()
+                    ContractTier.STANDARD -> baseDeadline
+                }
+                val reward = Economy.reward(type, km, payload.weightKg, demand, tier) *
+                    (cityEvent?.rewardFactor ?: 1.0) * (1.0 + (campaign?.rewardBoost ?: 0.0))
                 out += Contract(
                     id = "ctr_${tick}_${zone.zoneId}_$i", type = type, pickup = pickup, dropoff = drop,
-                    payload = payload, reward = Economy.reward(type, km, payload.weightKg, zone.demandMultiplier),
-                    deadlineTick = deadline, createdAtTick = tick, zoneId = zone.zoneId,
+                    payload = payload, reward = round(reward * 100) / 100,
+                    deadlineTick = deadline, createdAtTick = tick, zoneId = zone.zoneId, tier = tier,
                 )
                 budget--
             }

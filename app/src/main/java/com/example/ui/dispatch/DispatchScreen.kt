@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.Contract
 import com.example.model.ContractStatus
+import com.example.model.ContractTier
 import com.example.model.ContractType
 import com.example.model.Staff
 import com.example.model.Vehicle
@@ -332,6 +333,13 @@ private fun ContractCard(
                     )
                     Spacer(Modifier.width(6.dp))
                     StatusChip(contract.status.shortLabel, statusColor)
+                    if (contract.tier != ContractTier.STANDARD) {
+                        Spacer(Modifier.width(6.dp))
+                        StatusChip(
+                            contract.tier.label,
+                            if (contract.tier == ContractTier.EXPRESS) Amber else Iris,
+                        )
+                    }
                 }
                 Spacer(Modifier.height(2.dp))
                 Text(

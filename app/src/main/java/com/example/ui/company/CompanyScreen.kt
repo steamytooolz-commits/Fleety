@@ -27,6 +27,7 @@ import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AutoGraph
 import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -74,8 +75,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.model.Campaign
 import com.example.model.CityZone
 import com.example.model.Contract
+import com.example.model.Loan
 import com.example.model.ContractStatus
 import com.example.model.Player
 import com.example.model.Staff
@@ -128,6 +131,8 @@ import com.example.ui.theme.Violet
 private enum class CompanyTab(val label: String) {
     PERSONNEL("Personnel"),
     TERRITORY("Territory"),
+    MARKETING("Marketing"),
+    FINANCE("Finance"),
     LEDGER("Ledger"),
 }
 
@@ -143,11 +148,15 @@ fun CompanyScreen(
     contracts: List<Contract>,
     transactions: List<Transaction>,
     zones: List<CityZone>,
+    campaigns: List<Campaign>,
     currentTick: Long,
     onHireStaff: (name: String, role: StaffRole, skill: Int) -> Unit,
     onToggleShift: (staffId: String) -> Unit,
     onAssignDriver: (staffId: String, vehicleId: String?) -> Unit,
     onUnlockZone: (zoneId: String) -> Unit,
+    onStartCampaign: (zoneId: String, budget: Double) -> Unit = { _, _ -> },
+    onTakeLoan: (amount: Double) -> Unit = {},
+    onRepayLoan: (amount: Double) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var tabIndex by remember { mutableIntStateOf(0) }
@@ -166,6 +175,8 @@ fun CompanyScreen(
                 items = listOf(
                     "Personnel ${staff.size}",
                     "Territory ${zones.count { it.unlocked }}/${zones.size}",
+                    "Marketing ${campaigns.count { it.isActive }}",
+                    "Finance",
                     "Ledger ${transactions.size}",
                 ),
                 selectedIndex = tabIndex,
@@ -190,6 +201,21 @@ fun CompanyScreen(
                 cash = player.cash,
                 contracts = contracts,
                 onUnlockZone = onUnlockZone,
+            )
+
+            CompanyTab.MARKETING -> MarketingTab(
+                campaigns = campaigns,
+                zones = zones,
+                player = player,
+                onStartCampaign = onStartCampaign,
+            )
+
+            CompanyTab.FINANCE -> FinanceTab(
+                player = player,
+                transactions = transactions,
+                currentTick = currentTick,
+                onTakeLoan = onTakeLoan,
+                onRepayLoan = onRepayLoan,
             )
 
             CompanyTab.LEDGER -> LedgerTab(
@@ -940,13 +966,16 @@ private fun LedgerTab(
         2 -> transactions.filter { it.category == TransactionCategory.FUEL }
         3 -> transactions.filter { it.category == TransactionCategory.SALARY }
         4 -> transactions.filter {
-            it.category in setOf(TransactionCategory.PURCHASE, TransactionCategory.REPAIR, TransactionCategory.TOW, TransactionCategory.EXPANSION)
+            it.category in setOf(
+            TransactionCategory.PURCHASE, TransactionCategory.REPAIR, TransactionCategory.TOW,
+            TransactionCategory.EXPANSION, TransactionCategory.MARKETING,
+        )
         }
         else -> transactions.filter {
             it.category !in setOf(
                 TransactionCategory.REVENUE, TransactionCategory.LOAN, TransactionCategory.FUEL,
                 TransactionCategory.SALARY, TransactionCategory.PURCHASE, TransactionCategory.REPAIR,
-                TransactionCategory.TOW, TransactionCategory.EXPANSION,
+                TransactionCategory.TOW, TransactionCategory.EXPANSION, TransactionCategory.MARKETING,
             )
         }
     }
@@ -1100,6 +1129,7 @@ private fun categoryColor(category: TransactionCategory): Color = when (category
     TransactionCategory.EXPANSION -> Sky
     TransactionCategory.PURCHASE -> Violet
     TransactionCategory.PENALTY -> Coral
+    TransactionCategory.MARKETING -> Amber
 }
 
 private fun categoryIcon(category: TransactionCategory): ImageVector = when (category) {
@@ -1112,6 +1142,7 @@ private fun categoryIcon(category: TransactionCategory): ImageVector = when (cat
     TransactionCategory.EXPANSION -> Icons.Rounded.Storefront
     TransactionCategory.PURCHASE -> Icons.Rounded.LocalShipping
     TransactionCategory.PENALTY -> Icons.Rounded.WarningAmber
+    TransactionCategory.MARKETING -> Icons.Rounded.Storefront
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1179,6 +1210,269 @@ private fun ModalBottomSheetScaffold(
                 }
             }
             content()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Marketing
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+private fun MarketingTab(
+    campaigns: List<Campaign>,
+    zones: List<CityZone>,
+    player: Player,
+    onStartCampaign: (String, Double) -> Unit,
+) {
+    val active = campaigns.filter { it.isActive }
+    val invested = campaigns.sumOf { it.spend }
+    val licensed = zones.filter { it.unlocked }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item("marketing_summary") {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                StatCard(
+                    label = "Live campaigns",
+                    value = "${active.size}",
+                    caption = "${licensed.size} zones licensed",
+                    icon = Icons.Rounded.Storefront,
+                    accent = Iris,
+                    modifier = Modifier.weight(1f),
+                )
+                StatCard(
+                    label = "Invested",
+                    value = compactMoney(invested),
+                    caption = "Career marketing spend",
+                    icon = Icons.Rounded.AutoGraph,
+                    accent = Mint,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        player.cityEvent?.let { event ->
+            item("marketing_event") {
+                CityCard(accent = Amber) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconTile(Icons.Rounded.WarningAmber, Amber, size = 36)
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("CITY EVENT", style = MaterialTheme.typography.labelSmall, color = Amber)
+                            Text(event.label, style = MaterialTheme.typography.titleSmall, color = Paper)
+                            Text(event.effectLabel, style = MaterialTheme.typography.bodySmall, color = Slate)
+                        }
+                        Text("${event.ticksLeft}c", style = NumericStyle, color = Amber)
+                    }
+                }
+            }
+        }
+
+        item("marketing_header") {
+            SectionHeader(
+                title = "Demand generation",
+                overline = "Marketing",
+                subtitle = "${money(3000.0)} buys 60 cycles of higher demand and payouts in one zone.",
+            )
+        }
+
+        if (licensed.isEmpty()) {
+            item("marketing_empty") {
+                EmptyState(
+                    title = "No licensed zones",
+                    message = "Unlock a territory before advertising in it.",
+                    icon = Icons.Rounded.Storefront,
+                )
+            }
+        }
+
+        items(licensed, key = { "mkt-${it.zoneId}" }) { zone ->
+            val campaign = campaigns.firstOrNull { it.zoneId == zone.zoneId && it.isActive }
+            val finished = campaign == null && campaigns.any { it.zoneId == zone.zoneId && !it.isActive }
+            CityCard(contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconTile(icon = Icons.Rounded.Storefront, tint = Iris, size = 38)
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(zone.name, style = MaterialTheme.typography.titleSmall, color = Paper)
+                        Text(
+                            "Demand ×${String.format(java.util.Locale.US, "%.2f", zone.demandMultiplier)} · ${(zone.trafficIndex * 100).toInt()}% traffic",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Slate,
+                        )
+                    }
+                    when {
+                        campaign != null -> StatusChip("${campaign.ticksLeft}c left", Mint)
+                        finished -> StatusChip("Ended", Slate)
+                        else -> StatusChip("Idle", Slate)
+                    }
+                }
+
+                if (campaign != null) {
+                    Spacer(Modifier.height(10.dp))
+                    MeterRow(
+                        label = "Campaign window",
+                        fraction = (campaign.ticksLeft / 60f).coerceIn(0f, 1f),
+                        valueLabel = "${campaign.ticksLeft}c",
+                        color = Mint,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "+${(campaign.demandBoost * 100).toInt()}% demand · +${(campaign.rewardBoost * 100).toInt()}% payouts · ${money(campaign.spend)} invested",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Mint,
+                    )
+                } else {
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "+100% demand · +50% payouts for 60 cycles",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Slate,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        SecondaryButton(
+                            text = "Launch ${money(3000.0)}",
+                            onClick = { onStartCampaign(zone.zoneId, 3000.0) },
+                            enabled = player.cash >= 3000.0,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Finance
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+private fun FinanceTab(
+    player: Player,
+    transactions: List<Transaction>,
+    currentTick: Long,
+    onTakeLoan: (Double) -> Unit,
+    onRepayLoan: (Double) -> Unit,
+) {
+    val loan = player.loan
+    val window = transactions.filter { it.tick >= currentTick - 30 }
+    val revenue = window.filter { it.category == TransactionCategory.REVENUE }.sumOf { it.amount }
+    val spend = window.filter { !it.category.isIncome }.sumOf { -it.amount }
+    val interest = window.filter { it.category == TransactionCategory.LOAN && it.amount < 0 }.sumOf { -it.amount }
+    val marketingSpend = window.filter { it.category == TransactionCategory.MARKETING }.sumOf { -it.amount }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item("finance_summary") {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                StatCard(
+                    label = "Cash",
+                    value = compactMoney(player.cash),
+                    caption = "Credit line ${compactMoney(player.creditLimit)}",
+                    icon = Icons.Rounded.AccountBalanceWallet,
+                    accent = Mint,
+                    modifier = Modifier.weight(1f),
+                )
+                StatCard(
+                    label = "Net 30 cycles",
+                    value = signedMoney(revenue - spend),
+                    caption = "${money(revenue)} in",
+                    icon = Icons.Rounded.TrendingUp,
+                    accent = if (revenue >= spend) Mint else Amber,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        item("loan") {
+            CityCard(accent = if (loan != null) Amber else null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconTile(icon = Icons.Rounded.AccountBalance, tint = if (loan != null) Amber else Iris, size = 38)
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("OPERATING CREDIT", style = MaterialTheme.typography.labelSmall, color = Slate)
+                        Text(
+                            if (loan == null) "No money borrowed" else "${money(loan.remaining)} outstanding",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Paper,
+                        )
+                    }
+                    StatusChip(if (loan == null) "Available" else "Active", if (loan == null) Mint else Amber)
+                }
+                Spacer(Modifier.height(10.dp))
+                if (loan == null) {
+                    KeyValueRow("Credit limit", money(player.creditLimit), mono = true)
+                    Spacer(Modifier.height(6.dp))
+                    KeyValueRow("Rate", "6% per payroll", valueColor = Amber)
+                    Spacer(Modifier.height(6.dp))
+                    KeyValueRow("Term", "240 cycles")
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "The line grows with every delivery. Interest is charged each payroll and principal repays automatically while you hold a cash buffer.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Slate,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    PrimaryButton(
+                        text = "Draw ${money(minOf(5000.0, player.creditLimit))}",
+                        onClick = { onTakeLoan(minOf(5000.0, player.creditLimit)) },
+                        enabled = player.creditLimit >= 500.0,
+                    )
+                } else {
+                    KeyValueRow("Outstanding", money(loan.remaining), valueColor = Amber, mono = true)
+                    Spacer(Modifier.height(6.dp))
+                    KeyValueRow("Interest next payroll", money(loan.interestPerPayroll), valueColor = Amber, mono = true)
+                    Spacer(Modifier.height(6.dp))
+                    KeyValueRow("Term ends", deadlineLabel(loan.dueTick, currentTick))
+                    Spacer(Modifier.height(10.dp))
+                    MeterRow(
+                        label = "Repaid",
+                        fraction = loan.repaidFraction,
+                        valueLabel = "${(loan.repaidFraction * 100).toInt()}%",
+                        color = Mint,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    PrimaryButton(
+                        text = "Repay ${money(loan.remaining)}",
+                        onClick = { onRepayLoan(loan.remaining) },
+                        enabled = player.cash >= loan.remaining,
+                    )
+                }
+            }
+        }
+
+        item("cashflow") {
+            CityCard {
+                Text("LAST 30 CYCLES", style = MaterialTheme.typography.labelSmall, color = Slate)
+                Spacer(Modifier.height(8.dp))
+                KeyValueRow("Contract revenue", money(revenue), valueColor = Mint, mono = true)
+                Spacer(Modifier.height(6.dp))
+                KeyValueRow("Operating spend", money(spend), valueColor = Amber, mono = true)
+                Spacer(Modifier.height(6.dp))
+                KeyValueRow("Marketing", money(marketingSpend), mono = true)
+                Spacer(Modifier.height(6.dp))
+                KeyValueRow("Loan interest", money(interest), valueColor = if (interest > 0) Amber else Paper, mono = true)
+            }
+        }
+
+        item("finance_note") {
+            CityCard(containerColor = SurfaceRaised.copy(alpha = 0.7f)) {
+                Text(
+                    "Borrowing is cheapest when the board is full: interest accrues every payroll, and a shortfall is what triggers a strike.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Slate,
+                )
+            }
         }
     }
 }
