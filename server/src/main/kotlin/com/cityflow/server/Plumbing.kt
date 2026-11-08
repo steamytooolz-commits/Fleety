@@ -10,6 +10,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.*
+import kotlin.math.round
 
 class OsrmRouteProvider(private val baseUrl: String) : RouteProvider {
     private val client = HttpClient(CIO) { expectSuccess = false }
@@ -138,7 +139,9 @@ class PocketBaseStore(
                     if (ref.isNotBlank() && recordId.isNotBlank()) recordIds["$pid:$coll:$ref"] = recordId
                 }
             }
-            runCatching { toWorld(u, data) }.getOrNull()
+            runCatching { toWorld(u, data) }
+                .onFailure { System.err.println("Could not map player $pid: ${it.message}") }
+                .getOrNull()
         }
     }
 
@@ -169,8 +172,9 @@ class PocketBaseStore(
             )
         }
         val vehicles = arr("vehicles").map { it.jsonObject }.map { v ->
-            val loc = v["current_location"]?.jsonObject
-            val route = v["current_route"]?.jsonArray?.mapNotNull { p ->
+            // Records written by an older client can hold JSON nulls; never throw on those.
+            val loc = v["current_location"] as? JsonObject
+            val route = (v["current_route"] as? JsonArray)?.mapNotNull { p ->
                 val a = p.jsonArray
                 if (a.size >= 2) LngLat(a[1].jsonPrimitive.double, a[0].jsonPrimitive.double) else null
             } ?: emptyList()
@@ -187,9 +191,9 @@ class PocketBaseStore(
             )
         }
         val contracts = arr("contracts").map { it.jsonObject }.mapNotNull { c ->
-            val pu = c["pickup"]?.jsonObject ?: return@mapNotNull null
-            val dr = c["dropoff"]?.jsonObject ?: return@mapNotNull null
-            val payload = c["payload"]?.jsonObject
+            val pu = c["pickup"] as? JsonObject ?: return@mapNotNull null
+            val dr = c["dropoff"] as? JsonObject ?: return@mapNotNull null
+            val payload = c["payload"] as? JsonObject
             Contract(
                 id = c.str("ref_id"),
                 type = runCatching { ContractType.valueOf(c.str("type").uppercase()) }.getOrDefault(ContractType.PARCEL),
@@ -206,7 +210,7 @@ class PocketBaseStore(
         }
         return World(
             playerId = pid, companyName = player.str("company_name").ifBlank { "Operator" },
-            base = player["base_location"]?.jsonObject?.let { LngLat(it.num("lng", 18.424), it.num("lat", -33.9249)) } ?: City.base,
+            base = (player["base_location"] as? JsonObject)?.let { LngLat(it.num("lng", 18.424), it.num("lat", -33.9249)) } ?: City.base,
             cash = player.num("cash", 0.0), level = player.num("level", 1.0).toInt(),
             tick = player.num("tick", 0.0).toLong(), seed = player.num("seed", 1337.0).toLong(),
             zones = zones, staff = staff, vehicles = vehicles, contracts = contracts,
@@ -227,13 +231,28 @@ class PocketBaseStore(
             autoDispatch = player["auto_dispatch"]?.jsonPrimitive?.booleanOrNull ?: true,
             paused = player["paused"]?.jsonPrimitive?.booleanOrNull ?: false,
             speed = player.num("speed", 1.0).coerceIn(1.0, 4.0),
+            lifetimeCompleted = player.num("contracts_completed", 0.0).toInt(),
+            lifetimeFailed = player.num("contracts_failed", 0.0).toInt(),
+            lifetimeRevenue = player.num("total_revenue", 0.0),
         )
     }
 
     override suspend fun save(world: World) {
         val pid = world.playerId
+        // Progression is derived from lifetime counters so it survives the windowed collections.
+        val completed = world.lifetimeCompleted
+        val failed = world.lifetimeFailed
+        val xp = completed * XP_PER_CONTRACT
+        val level = 1 + (xp / XP_PER_LEVEL).toInt()
+        val attempts = completed + failed
+        val reputation = if (attempts == 0) 100.0 else completed * 100.0 / attempts
+        val distanceKm = world.vehicles.sumOf { it.mileageKm }
         val playerFields = buildJsonObject {
-            put("company_name", world.companyName); put("cash", world.cash); put("level", world.level)
+            put("company_name", world.companyName); put("cash", world.cash); put("level", level)
+            put("xp", xp); put("reputation", round(reputation * 10) / 10.0)
+            put("contracts_completed", completed); put("contracts_failed", failed)
+            put("total_revenue", round(world.lifetimeRevenue * 100) / 100.0)
+            put("distance_km", round(distanceKm * 10) / 10.0)
             put("tick", world.tick); put("seed", world.seed); put("last_payroll_tick", world.lastPayrollTick)
             put("auto_dispatch", world.autoDispatch); put("paused", world.paused); put("speed", world.speed)
             put("base_location", buildJsonObject { put("lat", world.base.lat); put("lng", world.base.lng) })
@@ -306,6 +325,9 @@ class PocketBaseStore(
     override fun close() = client.close()
 }
 
+private const val XP_PER_CONTRACT = 120L
+private const val XP_PER_LEVEL = 600L
+
 private fun urlEncode(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
 private fun JsonObject.str(k: String): String = this[k]?.jsonPrimitive?.contentOrNull ?: ""
 private fun JsonObject.num(k: String, d: Double): Double = this[k]?.jsonPrimitive?.doubleOrNull ?: d
@@ -333,7 +355,9 @@ class TickService(
                     var current = if (world.vehicles.isEmpty() && world.staff.isEmpty()) {
                         val seeded = City.initialWorld(world.playerId, world.companyName.ifBlank { "Apex City Logistics" },
                             world.seed, if (world.cash > 0) world.cash else 18500.0)
-                        seeded.copy(base = world.base, tick = world.tick, autoDispatch = world.autoDispatch, paused = world.paused, speed = world.speed)
+                        // A player with no fleet has never played: start the matching engine and clock.
+                        seeded.copy(base = world.base, tick = world.tick, autoDispatch = true, paused = false,
+                            speed = world.speed.coerceIn(1.0, 4.0))
                     } else world
                     val intents = store.pendingIntents().filter { it.playerId == world.playerId || it.playerId.isBlank() }
                     for (intent in intents) {

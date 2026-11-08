@@ -1,6 +1,8 @@
 package com.example.ui.emergency
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,33 +16,40 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.rounded.LocalGasStation
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.model.Incident
 import com.example.model.IncidentType
-import com.example.ui.theme.AmberWarning
-import com.example.ui.theme.CityCardNavy
-import com.example.ui.theme.CitySurfaceNavy
-import com.example.ui.theme.CrimsonError
-import com.example.ui.theme.CyanNeon
-import com.example.ui.theme.EmeraldSuccess
-import com.example.ui.theme.TextPrimaryDark
-import com.example.ui.theme.TextSecondaryDark
+import com.example.ui.components.PrimaryButton
+import com.example.ui.components.SecondaryButton
+import com.example.ui.components.StatusChip
+import com.example.ui.theme.Amber
+import com.example.ui.theme.Coral
+import com.example.ui.theme.Hairline
+import com.example.ui.theme.Ink
+import com.example.ui.theme.Mint
+import com.example.ui.theme.NumericStyle
+import com.example.ui.theme.Paper
+import com.example.ui.theme.Slate
+import com.example.ui.theme.SurfaceBase
+import com.example.ui.theme.SurfaceHigh
 
+/**
+ * Blocking operator interrupt. Severity-3 incidents arrive with the simulation clock already
+ * paused; closing this sheet resumes it (handled by the view model).
+ */
 @Composable
 fun EmergencyDialog(
     incident: Incident,
@@ -49,154 +58,170 @@ fun EmergencyDialog(
     onResolveStrike: (action: String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val isUrgent = incident.severity >= 3
-    val alertColor = if (isUrgent) CrimsonError else AmberWarning
+    val urgent = incident.severity >= 3
+    val accent = if (urgent) Coral else Amber
 
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        containerColor = CitySurfaceNavy,
-        shape = RoundedCornerShape(16.dp),
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(alertColor.copy(alpha = 0.2f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.Warning,
-                        contentDescription = null,
-                        tint = alertColor,
-                        modifier = Modifier.size(20.dp)
-                    )
+        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false),
+    ) {
+        Surface(
+            modifier = Modifier.padding(20.dp),
+            shape = RoundedCornerShape(26.dp),
+            color = SurfaceBase,
+            border = BorderStroke(1.dp, accent.copy(alpha = 0.45f)),
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(accent.copy(alpha = 0.16f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Rounded.WarningAmber, contentDescription = null, tint = accent, modifier = Modifier.size(22.dp))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(incident.type.label, style = MaterialTheme.typography.titleMedium, color = Paper)
+                        Text(
+                            if (urgent) "SEVERITY 3 · CLOCK HELD" else "OPERATIONAL ALERT",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = accent,
+                        )
+                    }
+                    StatusChip(if (urgent) "Critical" else "Warning", accent)
                 }
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = incident.type.label,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = alertColor
-                    )
-                    Text(
-                        text = if (isUrgent) "SEVERITY 3 • SIMULATION PAUSED" else "OPERATIONAL ALERT",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isUrgent) CrimsonError else AmberWarning
-                    )
-                }
-            }
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
+
+                Spacer(Modifier.height(14.dp))
                 Text(
-                    text = incident.description,
+                    incident.description.ifBlank { incident.type.label },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextPrimaryDark
+                    color = Slate,
                 )
-
-                Spacer(modifier = Modifier.height(14.dp))
-                Text(
-                    text = "Operator Command Actions:",
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                    color = CyanNeon
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                when (incident.type) {
-                    IncidentType.LOW_FUEL -> {
-                        Button(
-                            onClick = {
-                                onResolveLowFuel("DISPATCH_FUEL_TRUCK")
-                                onDismiss()
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("resolve_fuel_truck_btn"),
-                            colors = ButtonDefaults.buttonColors(containerColor = CyanNeon),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Dispatch Mobile Fuel Truck ($120)", color = CitySurfaceNavy, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = {
-                                onResolveLowFuel("REROUTE_STATION")
-                                onDismiss()
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("resolve_reroute_fuel_btn"),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Reroute to Nearest Fuel Depot", color = TextPrimaryDark, fontSize = 12.sp)
-                        }
+                if (incident.costIfIgnored > 0) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(SurfaceHigh.copy(alpha = 0.7f))
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text("If ignored", style = MaterialTheme.typography.bodySmall, color = Slate)
+                        Text(
+                            "$${incident.costIfIgnored.toInt()} exposure",
+                            style = NumericStyle,
+                            color = Amber,
+                        )
                     }
+                }
 
-                    IncidentType.BREAKDOWN -> {
-                        Button(
-                            onClick = {
-                                onResolveBreakdown("TOW_TO_BASE")
-                                onDismiss()
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("resolve_tow_base_btn"),
-                            colors = ButtonDefaults.buttonColors(containerColor = CyanNeon),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Tow to Base Maintenance Bay ($350)", color = CitySurfaceNavy, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = {
-                                onResolveBreakdown("FIELD_REPAIR")
-                                onDismiss()
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("resolve_field_repair_btn"),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Emergency On-Site Field Repair ($550)", color = TextPrimaryDark, fontSize = 12.sp)
-                        }
-                    }
+                Spacer(Modifier.height(16.dp))
+                Text("RESOLUTION", style = MaterialTheme.typography.labelSmall, color = Mint)
+                Spacer(Modifier.height(10.dp))
 
-                    IncidentType.STRIKE -> {
-                        Button(
-                            onClick = {
-                                onResolveStrike("TAKE_LOAN")
-                                onDismiss()
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("resolve_take_loan_btn"),
-                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Emergency Business Bridge Loan (+$8,000)", color = CitySurfaceNavy, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    when (incident.type) {
+                        IncidentType.LOW_FUEL -> {
+                            PrimaryButton(
+                                text = "Send fuel truck · $120",
+                                icon = Icons.Rounded.LocalGasStation,
+                                onClick = {
+                                    onResolveLowFuel("DISPATCH_FUEL_TRUCK")
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("resolve_fuel_truck_btn"),
+                            )
+                            SecondaryButton(
+                                text = "Reroute to nearest depot",
+                                onClick = {
+                                    onResolveLowFuel("REROUTE_STATION")
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("resolve_reroute_fuel_btn"),
+                            )
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = {
-                                onResolveStrike("PAY_BONUS")
-                                onDismiss()
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("resolve_pay_bonus_btn"),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Pay Labor Peace Bonus ($500)", color = TextPrimaryDark, fontSize = 12.sp)
-                        }
-                    }
 
-                    else -> {
-                        Button(
-                            onClick = onDismiss,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = CyanNeon),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("Acknowledge & Clear Delay", color = CitySurfaceNavy, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        IncidentType.BREAKDOWN, IncidentType.ACCIDENT -> {
+                            PrimaryButton(
+                                text = "Tow to base bay · $350",
+                                onClick = {
+                                    onResolveBreakdown("TOW_TO_BASE")
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("resolve_tow_base_btn"),
+                            )
+                            SecondaryButton(
+                                text = "Field repair · $520",
+                                onClick = {
+                                    onResolveBreakdown("FIELD_REPAIR")
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("resolve_field_repair_btn"),
+                            )
+                        }
+
+                        IncidentType.STRIKE -> {
+                            PrimaryButton(
+                                text = "Bridge loan · +$5,000",
+                                onClick = {
+                                    onResolveStrike("TAKE_LOAN")
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("resolve_take_loan_btn"),
+                            )
+                            SecondaryButton(
+                                text = "Settle half of the driver payroll",
+                                onClick = {
+                                    onResolveStrike("PAY_BONUS")
+                                    onDismiss()
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("resolve_pay_bonus_btn"),
+                            )
+                        }
+
+                        else -> {
+                            PrimaryButton(
+                                text = "Acknowledge",
+                                onClick = onDismiss,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
                         }
                     }
                 }
-            }
-        },
-        confirmButton = {
-            OutlinedButton(onClick = onDismiss) {
-                Text("Postpone", color = TextSecondaryDark)
+
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    Text(
+                        "Postpone",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (urgent) Coral else Slate,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .testTag("emergency_postpone_btn")
+                            .clickable(onClick = onDismiss)
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
             }
         }
-    )
+    }
 }

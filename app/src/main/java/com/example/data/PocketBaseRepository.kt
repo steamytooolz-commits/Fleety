@@ -182,6 +182,11 @@ class PocketBaseRepository(
 
     fun toggleStaffShift(staffId: String) = sendIntent("TOGGLE_SHIFT", JSONObject().put("staff_id", staffId))
 
+    fun assignDriver(staffId: String, vehicleId: String?) = sendIntent(
+        "ASSIGN_DRIVER",
+        JSONObject().put("staff_id", staffId).put("vehicle_id", vehicleId ?: ""),
+    )
+
     fun unlockZone(zoneId: String) = sendIntent("UNLOCK_ZONE", JSONObject().put("zone_id", zoneId))
 
     fun setAutoDispatch(enabled: Boolean) = sendIntent("SET_AUTO_DISPATCH", JSONObject().put("enabled", enabled))
@@ -388,6 +393,12 @@ class PocketBaseRepository(
                 ?: LatLng(-33.9249, 18.4241),
             cash = o.optDouble("cash", 0.0),
             level = o.optInt("level", 1),
+            xp = o.optLong("xp", 0L),
+            reputation = o.optDouble("reputation", 100.0),
+            totalRevenue = o.optDouble("total_revenue", 0.0),
+            contractsCompleted = o.optInt("contracts_completed", 0),
+            contractsFailed = o.optInt("contracts_failed", 0),
+            distanceKm = o.optDouble("distance_km", 0.0),
             tick = o.optLong("tick", 0L),
             autoDispatchEnabled = o.optBoolean("auto_dispatch", true),
             paused = o.optBoolean("paused", false),
@@ -414,6 +425,8 @@ class PocketBaseRepository(
                 ?: LatLng(-33.9249, 18.4241),
             currentRoute = route,
             routeProgress = o.optDouble("route_progress", 0.0).toFloat().coerceIn(0f, 1f),
+            routeKm = o.optDouble("route_km", 0.0),
+            travelledKm = o.optDouble("distance_travelled_km", 0.0),
             assignedDriverId = o.optString("assigned_driver").ifBlank { null },
             currentContractId = o.optString("contract").ifBlank { null },
             heading = o.optDouble("heading", 0.0).toFloat(),
@@ -433,6 +446,8 @@ class PocketBaseRepository(
             status = runCatching { StaffStatus.valueOf(o.optString("status").uppercase()) }.getOrDefault(StaffStatus.IDLE),
             assignedVehicleId = o.optString("assigned_vehicle").ifBlank { null },
             salaryPerDay = o.optDouble("salary_per_day", 120.0),
+            morale = o.optDouble("morale", 100.0),
+            restTicks = o.optInt("rest_ticks", 0),
         )
     }
 
@@ -464,6 +479,8 @@ class PocketBaseRepository(
             assignedDriverId = o.optString("assigned_driver").ifBlank { null },
             createdAtTick = o.optLong("created_tick", 0L),
             completedAtTick = o.optLong("completed_tick", 0L).takeIf { it > 0L },
+            routeKm = o.optDouble("route_km", 0.0),
+            zoneId = pickup.optString("zone_id").ifBlank { "cbd" },
         )
     }
 
@@ -480,6 +497,8 @@ class PocketBaseRepository(
             costIfIgnored = o.optDouble("cost_if_ignored", 0.0),
             description = o.optString("description", ""),
             createdTick = o.optLong("created_tick", 0L),
+            driverId = o.optString("driver").ifBlank { null },
+            zoneId = o.optString("zone_id").ifBlank { null },
         )
     }
 
@@ -493,8 +512,8 @@ class PocketBaseRepository(
             "tow" -> TransactionCategory.TOW
             "expansion" -> TransactionCategory.EXPANSION
             "purchase" -> TransactionCategory.PURCHASE
-            "penalty" -> TransactionCategory.EXPANSION
-            "loan" -> TransactionCategory.REVENUE
+            "penalty" -> TransactionCategory.PENALTY
+            "loan" -> TransactionCategory.LOAN
             else -> TransactionCategory.REVENUE
         }
         return Transaction(
@@ -519,7 +538,11 @@ class PocketBaseRepository(
                 demandMultiplier = record.optDouble("demand_multiplier", base.demandMultiplier),
                 trafficIndex = record.optDouble("traffic_index", base.trafficIndex),
                 unlocked = record.optBoolean("unlocked", base.unlocked),
+                unlockCost = record.optDouble("unlock_cost", base.unlockCost),
+                completionRateThreshold = record.optDouble("completion_threshold", base.completionRateThreshold),
                 completedContracts = record.optInt("completed_contracts", base.completedContracts),
+                failedContracts = record.optInt("failed_contracts", base.failedContracts),
+                unmetDemand = record.optInt("unmet_demand", base.unmetDemand),
             )
         }
     }

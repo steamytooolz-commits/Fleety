@@ -8,17 +8,47 @@ stores the authoritative player state and realtime deltas, and OSRM supplies roa
 
 | Path | Purpose |
 | --- | --- |
-| `app/` | Android client: Compose UI, MapLibre map, PocketBase auth/realtime/intents. |
+| `app/` | Android client: Compose console, MapLibre map, PocketBase auth/realtime/intents. |
+| `app/.../ui/components/` | Shared design system: cards, stat tiles, meters, chips, empty states, formatters. |
+| `app/.../ui/theme/` | Night-ops palette, type scale, shape scale, Material theme. |
 | `server/` | Authoritative tick service: FSM, fuel, fatigue, incidents, payroll, demand, matching, Monte Carlo. |
 | `backend/docker-compose.yml` | PocketBase 0.40.6 (built from the official release) + OSRM (MLD). |
-| `backend/pocketbase/pb_migrations/` | Collections, owner-scoped API rules, unique idempotency index. |
+| `backend/pocketbase/pb_migrations/` | v1 collections/rules, v2 progression fields, covering indexes and tightened intent rules. |
 | `backend/seed/seed.mjs` | Creates the demo player. |
 | `.github/workflows/` | `android-debug.yml` builds the APK; `server-tests.yml` runs simulation tests. |
 
 The tick service is authoritative. The app never advances time or edits simulation state: it reads
 PocketBase snapshots and SSE deltas, interpolates markers, and POSTs intents (assign, purchase,
-refuel, hire, shift, unlock, pause, speed, step, resolve, spawn). Every intent has an idempotency key
-and is validated against the server's world before it is applied.
+refuel, hire, assign driver, shift, unlock, pause, speed, step, resolve, spawn). Every intent has an
+idempotency key and is validated against the server's world before it is applied.
+
+## Client console
+
+The Android app is a five-destination operator console rather than a pile of tabs:
+
+| Destination | Contents |
+| --- | --- |
+| **Command** | Sim clock with pause / 1x-2x-4x / step, cash and revenue tiles, fleet posture, open incidents, live dispatch board, recent ledger. |
+| **Dispatch** | Contract market with open/active/closed filters, deadline/reward/newest sorting, and a match sheet that ranks idle vehicles with the same deterministic score the tick service uses. |
+| **Map** | MapLibre live map, status filters, a horizontal fleet strip and a selected-asset card with fuel, condition and leg progress. |
+| **Fleet** | Telemetry per asset, refuel and maintenance actions, breakdown-risk estimate, driver assignment and the dealer. |
+| **Company** | Personnel roster (fatigue, morale, shifts, vehicle assignment, hiring), territory licensing with Monte Carlo projections, and the full finance ledger. |
+
+The design system lives in `ui/theme` and `ui/components`: a dark night-ops palette (mint for money
+and primary action, iris for selection, amber/coral for attention), a monospaced numeric scale for
+live readouts, a 20 dp card radius, and one component library shared by every screen. A level and
+reputation badge surfaces the career counters that the tick service now persists.
+
+| Command | Dispatch |
+| --- | --- |
+| ![Command](docs/screenshots/command.png) | ![Dispatch](docs/screenshots/dispatch.png) |
+
+| Fleet | Ledger |
+| --- | --- |
+| ![Fleet](docs/screenshots/fleet.png) | ![Ledger](docs/screenshots/ledger.png) |
+
+These images are Robolectric renders of the real composables with fixture state
+(`app/src/test/.../ConsoleScreenshotTest.kt`), not device captures — see Verification below.
 
 ## Quick start
 
@@ -94,37 +124,49 @@ Cleartext HTTP is enabled for local development. Map tiles come from OpenStreetM
 - **Demand**: seeded per-zone Poisson processes over Cape Town POIs. No randomness outside the
   seeded demand stream.
 - **History**: active + last 200 closed contracts, last 40 resolved incidents and 400 ledger rows are
-  retained to bound sync cost.
+  retained to bound sync cost. Lifetime delivered/missed counts and revenue are carried separately
+  so progression survives that window.
+- **Rostering**: a driver holds one vehicle and a vehicle holds one driver. `ASSIGN_DRIVER` moves both
+  sides atomically, rejects moving assets, and only accepts drivers on shift. Hiring charges a $350
+  placement fee and an unpayable payroll still triggers the strike path.
+- **Progression**: the tick service derives level, XP, reputation, lifetime revenue and distance on
+  save, so the client can show a career record without recomputing the ledger.
 
 ## Verification
 
-Run here and passing:
+Run in this workspace (JDK 21, Gradle 9.3.1, Android SDK 36.1):
 
-- `cd server && gradle test` — 8 tests, 0 failures: polyline adherence, order-independent deterministic
-  matching, suitability rejection, low-fuel breakdown + tow, payroll clamp/strike, duplicate intent
-  rejection, Monte Carlo reproducibility/percentiles.
-- Live PocketBase mode with a mock OSRM: 2 vehicles, 3 staff, 5 zones seeded; 19 contracts delivered,
-  revenue and payroll ledger rows written; vehicle route geometry persisted.
-- Real intent round-trip through PocketBase: `SET_PAUSED` froze the tick (155 → 155), `FORCE_STEP`
-  advanced exactly one (156), `SET_PAUSED false` resumed; all three intents reported `done` with
-  results.
-- PocketBase realtime SSE handshake with the same flow the app uses: `PB_CONNECT` → subscribed to
-  `vehicles`/`players` → received live vehicle status and player-tick deltas.
-- Server restart resumed from persisted tick (1100+) and continued saving without duplicate-record
-  errors.
-- `./gradlew :app:assembleDebug :app:testDebugUnitTest` — APK built (65 MB with MapLibre native libs),
-  unit tests pass.
-- `docker compose config` validates; the pinned PocketBase 0.40.6 release asset responds 200.
-- Both workflow YAML files parse.
+- `gradle -p server test` — **11 tests, 0 failures**: polyline adherence, order-independent matching,
+  suitability rejection, low-fuel breakdown + tow, payroll clamp/strike, duplicate intent rejection,
+  deterministic Monte Carlo, driver assignment (including rejection of moving assets), recruitment
+  fee, and lifetime counters surviving the windowed contract list.
+- `gradle :app:assembleDebug :app:testDebugUnitTest` — debug APK builds and all unit tests pass.
+- `ConsoleScreenshotTest` renders the console with fixture state under Robolectric native graphics and
+  writes PNGs to `app/build/screenshots/` for Command, Dispatch, Fleet and Company (Personnel,
+  Territory, Ledger), plus two wiring tests (navigation between destinations and the clock control).
+  These renders were reviewed visually and drove the layout fixes in this change (card widths,
+  overlapping roster controls, ambiguous zone icons, dead sort control).
+- **Live stack:** PocketBase 0.40.6 (real binary, not Docker) had both migrations applied and the schema
+  inspected directly — progression fields on `players`, the five new covering indexes, and
+  insert-only `intents` rules all present. The tick service then ran against it with a mock OSRM for
+  several hundred ticks:
+  - A brand-new player seeded its fleet, kept `auto_dispatch` on, assigned work and completed
+    contracts within 29 ticks.
+  - Lifetime counters persisted (`contracts_completed`, `contracts_failed`, `total_revenue`,
+    `distance_km`, `xp`, `level`, `reputation`) while fleet mileage and route geometry updated.
+  - `HIRE_STAFF` round-tripped through the intent queue, wrote the $350 placement fee to the ledger,
+    and `ASSIGN_DRIVER` bound the new driver to `veh_02` in PocketBase.
+
+This live run also caught and fixed two real defects: `toWorld` threw on a fresh player's null
+`base_location` (so the initial fleet was never seeded), and a new player persisted
+`auto_dispatch = false` (so the matching engine never ran and contracts only expired).
 
 Not verified in this environment:
 
-- On-device/emulator rendering and interaction: MapLibre style/tiles, marker tap selection,
-  interpolation and the 150-vehicle target have not been visually exercised (no emulator here).
-- Full `docker compose up` with the South Africa PBF and real OSRM extraction; the tested OSRM was a
-  deterministic mock that returns GeoJSON routes.
-- GitHub Actions execution (nothing has been pushed). The keystore and Gradle setup were reproduced
-  locally with the same command.
+- On-device/emulator interaction. MapLibre cannot render under Robolectric, so the Map destination
+  (style, tiles, marker taps, overlay placement) is reviewed by code only.
+- Real OSRM routing against the South Africa PBF (a deterministic mock supplied geometry), and
+  GitHub Actions execution (nothing has been pushed).
 
 ## Security notes
 
@@ -133,5 +175,7 @@ Not verified in this environment:
 - The server needs superuser credentials at runtime; pass them as environment variables, never commit
   them.
 - `users`/`_superusers` are untouched; player records are the auth collection used by the game.
+- Intents are insert-only for players: schema v2 restricts updates and deletes on `intents` to the
+  superuser, so the tick service is the only writer of their outcome.
 - Cleartext traffic is for local development only; use HTTPS and a reverse proxy for a hosted
   deployment.

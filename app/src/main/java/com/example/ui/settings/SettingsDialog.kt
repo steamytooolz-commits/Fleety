@@ -1,5 +1,8 @@
 package com.example.ui.settings
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,19 +11,19 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -32,21 +35,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.example.ui.theme.CityBorderNavy
-import com.example.ui.theme.CityCardNavy
-import com.example.ui.theme.CitySurfaceNavy
-import com.example.ui.theme.CyanNeon
-import com.example.ui.theme.EmeraldSuccess
-import com.example.ui.theme.TextMutedDark
-import com.example.ui.theme.TextPrimaryDark
-import com.example.ui.theme.TextSecondaryDark
+import com.example.ui.components.PrimaryButton
+import com.example.ui.components.SecondaryButton
+import com.example.ui.theme.Hairline
+import com.example.ui.theme.Ink
+import com.example.ui.theme.Mint
+import com.example.ui.theme.Muted
+import com.example.ui.theme.Paper
+import com.example.ui.theme.Slate
+import com.example.ui.theme.SurfaceBase
+import com.example.ui.theme.SurfaceHigh
 
 @Composable
 fun SettingsDialog(
@@ -66,114 +71,155 @@ fun SettingsDialog(
         onDismiss()
     }
 
-    AlertDialog(
+    Dialog(
         onDismissRequest = { safeDismiss() },
         properties = DialogProperties(usePlatformDefaultWidth = false),
-        modifier = Modifier.padding(24.dp),
-        containerColor = CitySurfaceNavy,
-        shape = RoundedCornerShape(16.dp),
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Settings, contentDescription = null, tint = CyanNeon, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("System & Server Architecture", color = TextPrimaryDark, fontWeight = FontWeight.Bold)
-            }
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "CityFlow Native Engine • PocketBase & OSRM Settings",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondaryDark
-                )
+    ) {
+        Surface(
+            modifier = Modifier.padding(20.dp),
+            shape = RoundedCornerShape(26.dp),
+            color = SurfaceBase,
+            border = BorderStroke(1.dp, Hairline),
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Settings, contentDescription = null, tint = Mint, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(9.dp))
+                    Column {
+                        Text("Connection", style = MaterialTheme.typography.titleLarge, color = Paper)
+                        Text(
+                            "Point the client at your PocketBase and OSRM services",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Slate,
+                        )
+                    }
+                }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(Modifier.height(18.dp))
+                Text("END POINTS", style = MaterialTheme.typography.labelSmall, color = Mint)
+                Spacer(Modifier.height(8.dp))
 
                 OutlinedTextField(
                     value = pbUrl,
                     onValueChange = { pbUrl = it },
-                    label = { Text("PocketBase SSE URL", fontSize = 12.sp) },
+                    label = { Text("PocketBase URL") },
+                    placeholder = { Text("http://10.0.2.2:8090", color = Muted) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth().testTag("pb_url_input"),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = CityCardNavy,
-                        unfocusedContainerColor = CityCardNavy,
-                        focusedTextColor = TextPrimaryDark,
-                        unfocusedTextColor = TextPrimaryDark,
-                        focusedIndicatorColor = CyanNeon,
-                        unfocusedIndicatorColor = CityBorderNavy
-                    )
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("pb_url_input"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = fieldColors(),
                 )
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(Modifier.height(10.dp))
 
                 OutlinedTextField(
                     value = osrmUrl,
                     onValueChange = { osrmUrl = it },
-                    label = { Text("OSRM Docker Routing Endpoint", fontSize = 12.sp) },
+                    label = { Text("OSRM routing URL") },
+                    placeholder = { Text("http://10.0.2.2:5000", color = Muted) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
-                    modifier = Modifier.fillMaxWidth().testTag("osrm_url_input"),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = CityCardNavy,
-                        unfocusedContainerColor = CityCardNavy,
-                        focusedTextColor = TextPrimaryDark,
-                        unfocusedTextColor = TextPrimaryDark,
-                        focusedIndicatorColor = CyanNeon,
-                        unfocusedIndicatorColor = CityBorderNavy
-                    )
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("osrm_url_input"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = fieldColors(),
                 )
 
-                Spacer(modifier = Modifier.height(14.dp))
-
+                Spacer(Modifier.height(18.dp))
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(SurfaceHigh.copy(alpha = 0.55f))
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Deterministic Auto-Dispatch", color = TextPrimaryDark, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text("Auto-match contracts with idle fleet", color = TextSecondaryDark, fontSize = 11.sp)
+                        Text("Automatic dispatch", style = MaterialTheme.typography.titleSmall, color = Paper)
+                        Text(
+                            "Let the matching engine assign idle assets",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Slate,
+                        )
                     }
                     Switch(
                         checked = autoDispatch,
                         onCheckedChange = { autoDispatch = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = CyanNeon, checkedTrackColor = CyanNeon.copy(alpha = 0.4f))
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Ink,
+                            checkedTrackColor = Mint,
+                            uncheckedThumbColor = Slate,
+                            uncheckedTrackColor = SurfaceHigh,
+                            uncheckedBorderColor = Hairline,
+                        ),
                     )
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Info, contentDescription = null, tint = EmeraldSuccess, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
+                Spacer(Modifier.height(14.dp))
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(Icons.Rounded.Lock, contentDescription = null, tint = Muted, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(7.dp))
                     Text(
-                        text = "Security: Superuser credentials never ship in APK. All client mutations enforce idempotency keys.",
-                        color = TextMutedDark,
-                        fontSize = 11.sp
+                        "Superuser credentials never ship in the APK. Every client mutation carries an " +
+                            "idempotency key and is validated by the tick service.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Muted,
                     )
                 }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    focusManager.clearFocus()
-                    onSaveSettings(pbUrl, osrmUrl, autoDispatch)
-                    onDismiss()
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = CyanNeon),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.testTag("save_settings_btn")
-            ) {
-                Text("Save Configuration", color = CitySurfaceNavy, fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            OutlinedButton(onClick = { safeDismiss() }) {
-                Text("Cancel", color = TextSecondaryDark)
+
+                Spacer(Modifier.height(18.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SecondaryButton(
+                        text = "Cancel",
+                        onClick = { safeDismiss() },
+                        modifier = Modifier.weight(1f),
+                    )
+                    PrimaryButton(
+                        text = "Save",
+                        onClick = {
+                            focusManager.clearFocus()
+                            onSaveSettings(pbUrl.trim(), osrmUrl.trim(), autoDispatch)
+                            onDismiss()
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("save_settings_btn"),
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Dns, contentDescription = null, tint = Muted, modifier = Modifier.size(13.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "CityFlow tick service · PocketBase 0.40 · OSRM MLD",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Muted,
+                    )
+                }
             }
         }
-    )
+    }
 }
+
+@Composable
+private fun fieldColors() = TextFieldDefaults.colors(
+    focusedContainerColor = SurfaceHigh.copy(alpha = 0.6f),
+    unfocusedContainerColor = SurfaceHigh.copy(alpha = 0.35f),
+    focusedTextColor = Paper,
+    unfocusedTextColor = Paper,
+    focusedLabelColor = Mint,
+    unfocusedLabelColor = Slate,
+    cursorColor = Mint,
+    focusedIndicatorColor = Mint.copy(alpha = 0.7f),
+    unfocusedIndicatorColor = Hairline,
+)

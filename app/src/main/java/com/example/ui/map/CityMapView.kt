@@ -109,8 +109,6 @@ fun CityMapView(
     val selectedState = rememberUpdatedState(selectedVehicleId)
     val onSelectState = rememberUpdatedState(onVehicleSelect)
 
-    val selectedVehicle = vehicles.find { it.id == selectedVehicleId }
-
     DisposableEffect(lifecycleOwner, mapView) {
         val view = mapView
         if (view != null) {
@@ -173,13 +171,13 @@ fun CityMapView(
 
             currentStyle.addLayer(
                 FillLayer("zones-fill-layer", "zones-source").withProperties(
-                    PropertyFactory.fillColor("#00E5FF"),
+                    PropertyFactory.fillColor("#78F2C2"),
                     PropertyFactory.fillOpacity(0.04f)
                 )
             )
             currentStyle.addLayer(
                 LineLayer("zones-outline-layer", "zones-source").withProperties(
-                    PropertyFactory.lineColor("#00E5FF"),
+                    PropertyFactory.lineColor("#78F2C2"),
                     PropertyFactory.lineOpacity(0.22f),
                     PropertyFactory.lineWidth(1.5f)
                 )
@@ -195,14 +193,14 @@ fun CityMapView(
             )
             currentStyle.addLayer(
                 LineLayer("route-glow-layer", "route-source").withProperties(
-                    PropertyFactory.lineColor("#00E5FF"),
+                    PropertyFactory.lineColor("#78F2C2"),
                     PropertyFactory.lineOpacity(0.35f),
                     PropertyFactory.lineWidth(12f)
                 )
             )
             currentStyle.addLayer(
                 LineLayer("route-line-layer", "route-source").withProperties(
-                    PropertyFactory.lineColor("#00E5FF"),
+                    PropertyFactory.lineColor("#78F2C2"),
                     PropertyFactory.lineOpacity(0.95f),
                     PropertyFactory.lineWidth(5f)
                 )
@@ -226,7 +224,7 @@ fun CityMapView(
             currentStyle.addLayer(
                 CircleLayer("vehicles-layer", "vehicles-source").withProperties(
                     PropertyFactory.circleRadius(7f),
-                    PropertyFactory.circleColor("#00E5FF"),
+                    PropertyFactory.circleColor("#78F2C2"),
                     PropertyFactory.circleStrokeWidth(2f),
                     PropertyFactory.circleStrokeColor("#071220")
                 )
@@ -237,7 +235,7 @@ fun CityMapView(
                     PropertyFactory.circleColor("#000000"),
                     PropertyFactory.circleOpacity(0f),
                     PropertyFactory.circleStrokeWidth(3f),
-                    PropertyFactory.circleStrokeColor("#00E5FF")
+                    PropertyFactory.circleStrokeColor("#78F2C2")
                 )
             )
         }
@@ -378,80 +376,6 @@ fun CityMapView(
                         modifier = Modifier.size(40.dp).testTag("center_map_btn")
                     ) {
                         Icon(Icons.Default.MyLocation, contentDescription = "Reset Center", tint = CyanNeon)
-                    }
-                }
-            }
-        }
-
-        // Selected vehicle HUD
-        if (selectedVehicle != null) {
-            Card(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 16.dp, bottom = 48.dp, end = 16.dp)
-                    .fillMaxWidth(0.92f)
-                    .testTag("vehicle_hud_card"),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = CitySurfaceNavy.copy(alpha = 0.95f)),
-                border = BorderStroke(1.dp, CyanNeon.copy(alpha = 0.6f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .background(
-                                when (selectedVehicle.status) {
-                                    VehicleStatus.BREAKDOWN -> CrimsonError.copy(alpha = 0.2f)
-                                    VehicleStatus.IDLE -> CyanNeon.copy(alpha = 0.2f)
-                                    else -> EmeraldSuccess.copy(alpha = 0.2f)
-                                },
-                                CircleShape
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.LocalShipping,
-                            contentDescription = null,
-                            tint = when (selectedVehicle.status) {
-                                VehicleStatus.BREAKDOWN -> CrimsonError
-                                VehicleStatus.IDLE -> CyanNeon
-                                else -> EmeraldSuccess
-                            },
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = selectedVehicle.plate,
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                color = TextPrimaryDark
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Badge(
-                                containerColor = when (selectedVehicle.status) {
-                                    VehicleStatus.BREAKDOWN -> CrimsonError
-                                    VehicleStatus.IDLE -> CityCardNavy
-                                    VehicleStatus.FORCED_REST -> AmberWarning
-                                    else -> EmeraldSuccess
-                                }
-                            ) {
-                                Text(
-                                    text = selectedVehicle.status.name.replace("_", " "),
-                                    fontSize = 10.sp,
-                                    color = Color.White
-                                )
-                            }
-                        }
-                        Text(
-                            text = "${selectedVehicle.vehicleClass.label} • Fuel: ${selectedVehicle.fuel.toInt()}% • Condition: ${selectedVehicle.condition.toInt()}%",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondaryDark
-                        )
                     }
                 }
             }

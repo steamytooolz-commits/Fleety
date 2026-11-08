@@ -12,6 +12,10 @@ data class IntentOutcome(val world: World, val accepted: Boolean, val message: S
 
 class Engine(private val cfg: SimConfig = SimConfig()) {
 
+    private companion object {
+        const val RECRUITMENT_FEE = 350.0
+    }
+
     fun step(input: World, routes: RouteProvider): TickResult {
         if (input.paused && !input.stepOnce) return TickResult(input, emptyList())
         return Run(input, routes).run()
@@ -83,9 +87,47 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
                 val skill = (num("skill") ?: 5.0).toInt().coerceIn(1, 10)
                 val name = str("name") ?: "New Hire"
                 val salary = if (role == Role.DRIVER) 135.0 else 150.0
+                if (w.cash < RECRUITMENT_FEE) return IntentOutcome(w, false, "Insufficient cash for the placement fee")
                 val id = "staff_${w.staff.size + 1}_${w.tick}"
                 w = w.copy(staff = w.staff + Staff(id, name, role, 0.0, skill, StaffStatus.ON_SHIFT, salaryPerDay = salary))
+                tx(TxCategory.SALARY, -RECRUITMENT_FEE, "Placement fee — $name", key = intent.key)
                 IntentOutcome(w, true, "Hired $name as ${role.name.lowercase()}")
+            }
+            "ASSIGN_DRIVER" -> {
+                val sid = str("staff_id")
+                val s = w.staff.find { it.id == sid } ?: return IntentOutcome(w, false, "Unknown staff")
+                if (s.role != Role.DRIVER) return IntentOutcome(w, false, "Only drivers can be assigned to a vehicle")
+                val vid = str("vehicle_id")
+                if (vid.isNullOrBlank()) {
+                    w = w.copy(
+                        staff = w.staff.map { if (it.id == s.id) it.copy(vehicleId = null) else it },
+                        vehicles = w.vehicles.map { if (it.driverId == s.id) it.copy(driverId = null) else it },
+                    )
+                    return IntentOutcome(w, true, "${s.name} released from their vehicle")
+                }
+                val v = w.vehicles.find { it.id == vid } ?: return IntentOutcome(w, false, "Unknown vehicle")
+                if (v.status != VehicleStatus.IDLE) return IntentOutcome(w, false, "Vehicle must be idle to take a driver")
+                if (s.status != StaffStatus.ON_SHIFT) return IntentOutcome(w, false, "${s.name} is not on shift")
+                // A driver holds one vehicle and a vehicle holds one driver; move both sides together.
+                val previousDriver = v.driverId
+                w = w.copy(
+                    staff = w.staff.map {
+                        when {
+                            it.id == s.id -> it.copy(vehicleId = v.id)
+                            it.vehicleId == v.id -> it.copy(vehicleId = null)
+                            it.id == previousDriver -> it.copy(vehicleId = null)
+                            else -> it
+                        }
+                    },
+                    vehicles = w.vehicles.map {
+                        when {
+                            it.id == v.id -> it.copy(driverId = s.id)
+                            it.driverId == s.id -> it.copy(driverId = null)
+                            else -> it
+                        }
+                    },
+                )
+                IntentOutcome(w, true, "${s.name} assigned to ${v.plate}")
             }
             "TOGGLE_SHIFT" -> {
                 val sid = str("staff_id"); val s = w.staff.find { it.id == sid } ?: return IntentOutcome(w, false, "Unknown staff")
@@ -244,6 +286,9 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
         val incidents = input.incidents.toMutableList()
         val ledger = input.ledger.toMutableList()
         var cash = input.cash
+        var completedTotal = input.lifetimeCompleted
+        var failedTotal = input.lifetimeFailed
+        var revenueTotal = input.lifetimeRevenue
 
         fun zoneOf(p: LngLat) = zones.values.firstOrNull { it.bounds.contains(p) }
         fun driverOf(v: Vehicle) = v.driverId?.let { staff[it] }
@@ -297,6 +342,7 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
                 zones = zones.values.toList(), staff = staff.values.toList(), vehicles = vehicles.values.toList(),
                 contracts = active + closed, incidents = openIncidents + resolvedIncidents,
                 ledger = if (includeLedger) ledger.takeLast(400) else input.ledger,
+                lifetimeCompleted = completedTotal, lifetimeFailed = failedTotal, lifetimeRevenue = revenueTotal,
             )
         }
 
@@ -395,6 +441,8 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
         fun complete(v: Vehicle, c: Contract?): Vehicle {
             if (c == null) return release(v)
             money(TxCategory.REVENUE, c.reward, "Completed ${c.type.name.lowercase()} ${c.id}", c.id)
+            completedTotal++
+            revenueTotal += c.reward
             contracts[c.id] = c.copy(status = ContractStatus.COMPLETED, completedAtTick = tick)
             zones[c.zoneId]?.let { zones[c.zoneId] = it.copy(completed = it.completed + 1) }
             events += Event("completed", "Contract ${c.id} delivered", c.id, c.reward)
@@ -438,6 +486,7 @@ class Engine(private val cfg: SimConfig = SimConfig()) {
             for (c in contracts.values.toList()) {
                 if (c.status in setOf(ContractStatus.COMPLETED, ContractStatus.FAILED) || tick <= c.deadlineTick) continue
                 contracts[c.id] = c.copy(status = ContractStatus.FAILED)
+                failedTotal++
                 zones[c.zoneId]?.let { zones[c.zoneId] = it.copy(failed = it.failed + 1, unmet = it.unmet + 1) }
                 c.vehicleId?.let { vid -> vehicles[vid]?.let { vehicles[vid] = release(it) } }
                 events += Event("failed", "Contract ${c.id} missed its deadline", c.id)

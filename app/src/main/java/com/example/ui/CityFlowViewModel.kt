@@ -23,11 +23,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 enum class AppScreen(val title: String) {
-    OPERATIONS("Live Map"),
+    COMMAND("Command"),
     DISPATCH("Dispatch"),
+    MAP("Map"),
     FLEET("Fleet"),
-    STAFF("Staff"),
-    EXPANSION("Expansion")
+    COMPANY("Company"),
 }
 
 /**
@@ -46,13 +46,16 @@ class CityFlowViewModel : ViewModel() {
     val transactions: StateFlow<List<Transaction>> = repository.transactions
     val zones: StateFlow<List<CityZone>> = repository.zones
 
-    val vehiclesList: StateFlow<List<Vehicle>> = vehiclesMap.map { it.values.toList() }
+    val vehiclesList: StateFlow<List<Vehicle>> = vehiclesMap.map { it.values.sortedBy { v -> v.plate } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val contractsList: StateFlow<List<Contract>> = contractsMap.map { it.values.toList() }
+    val contractsList: StateFlow<List<Contract>> = contractsMap.map { it.values.sortedByDescending { c -> c.createdAtTick } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val incidentsList: StateFlow<List<Incident>> = incidentsMap.map { it.values.toList() }
+    val incidentsList: StateFlow<List<Incident>> = incidentsMap.map { it.values.sortedByDescending { i -> i.createdTick } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val staffList: StateFlow<List<Staff>> = staff.map { it.values.sortedBy { s -> s.name } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val currentTick: StateFlow<Long> = player.map { it.tick }
@@ -69,21 +72,24 @@ class CityFlowViewModel : ViewModel() {
 
     val connection = repository.connection
 
-    private val _currentScreen = MutableStateFlow(AppScreen.OPERATIONS)
+    private val _currentScreen = MutableStateFlow(AppScreen.COMMAND)
     val currentScreen: StateFlow<AppScreen> = _currentScreen.asStateFlow()
 
-    private val _selectedVehicleId = MutableStateFlow<String?>("veh_01")
+    private val _selectedVehicleId = MutableStateFlow<String?>(null)
     val selectedVehicleId: StateFlow<String?> = _selectedVehicleId.asStateFlow()
 
     private val _activeEmergency = MutableStateFlow<Incident?>(null)
     val activeEmergency: StateFlow<Incident?> = _activeEmergency.asStateFlow()
+
+    /** True when the app paused the clock itself to surface a severity-3 incident. */
+    private var autoPausedForEmergency = false
 
     init {
         repository.start()
         viewModelScope.launch {
             repository.observeIncidents().collect { event ->
                 if (event is RealtimeEvent.Created && event.item.severity >= 3 && !event.item.resolved) {
-                    _activeEmergency.value = event.item
+                    surfaceEmergency(event.item)
                 }
             }
         }
@@ -91,9 +97,17 @@ class CityFlowViewModel : ViewModel() {
         viewModelScope.launch {
             repository.incidents.collect { map ->
                 if (_activeEmergency.value == null) {
-                    map.values.firstOrNull { it.severity >= 3 && !it.resolved }?.let { _activeEmergency.value = it }
+                    map.values.firstOrNull { it.severity >= 3 && !it.resolved }?.let { surfaceEmergency(it) }
                 }
             }
+        }
+    }
+
+    private fun surfaceEmergency(incident: Incident) {
+        _activeEmergency.value = incident
+        if (!player.value.paused) {
+            autoPausedForEmergency = true
+            repository.setPaused(true)
         }
     }
 
@@ -105,7 +119,12 @@ class CityFlowViewModel : ViewModel() {
         _selectedVehicleId.value = vehicleId
     }
 
+    fun clearVehicleSelection() {
+        _selectedVehicleId.value = null
+    }
+
     fun togglePause() {
+        if (isPaused.value) autoPausedForEmergency = false
         repository.setPaused(!isPaused.value)
     }
 
@@ -152,12 +171,25 @@ class CityFlowViewModel : ViewModel() {
         repository.toggleStaffShift(staffId)
     }
 
+    fun assignDriver(staffId: String, vehicleId: String?) {
+        repository.assignDriver(staffId, vehicleId)
+    }
+
     fun unlockZone(zoneId: String) {
         repository.unlockZone(zoneId)
     }
 
     fun setActiveEmergency(incident: Incident?) {
-        _activeEmergency.value = incident
+        if (incident == null) dismissEmergency() else _activeEmergency.value = incident
+    }
+
+    /** Close the incident sheet and release a clock pause the app applied itself. */
+    fun dismissEmergency() {
+        _activeEmergency.value = null
+        if (autoPausedForEmergency) {
+            autoPausedForEmergency = false
+            if (isPaused.value) repository.setPaused(false)
+        }
     }
 
     fun resolveLowFuel(vehicleId: String, action: String) {
@@ -171,14 +203,14 @@ class CityFlowViewModel : ViewModel() {
     fun resolveStrike(action: String) {
         val incident = _activeEmergency.value ?: return
         repository.resolveIncident(incident.id, action)
-        _activeEmergency.value = null
+        dismissEmergency()
     }
 
     private fun resolveForVehicle(vehicleId: String, action: String) {
         val incident = _activeEmergency.value
             ?: repository.incidents.value.values.firstOrNull { it.vehicleId == vehicleId && !it.resolved }
         if (incident != null) repository.resolveIncident(incident.id, action)
-        _activeEmergency.value = null
+        dismissEmergency()
     }
 
     fun saveSettings(pbUrl: String, osrmUrl: String, autoDispatch: Boolean) {

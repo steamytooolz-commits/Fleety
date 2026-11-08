@@ -63,6 +63,8 @@ import kotlin.math.*
     val contracts: List<Contract>, val incidents: List<Incident>, val ledger: List<Transaction>,
     val lastPayrollTick: Long = 0, val autoDispatch: Boolean = true,
     val paused: Boolean = false, val stepOnce: Boolean = false, val speed: Double = 1.0,
+    // Lifetime progression. The contract list is windowed, so totals are carried separately.
+    val lifetimeCompleted: Int = 0, val lifetimeFailed: Int = 0, val lifetimeRevenue: Double = 0.0,
 )
 data class Event(val type: String, val description: String, val entityId: String? = null, val amount: Double = 0.0)
 data class TickResult(val world: World, val events: List<Event>)

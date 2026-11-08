@@ -21,11 +21,25 @@ data class Player(
     val baseLocation: LatLng = LatLng(-33.9249, 18.4241), // Cape Town CBD Base
     val cash: Double = 0.0,
     val level: Int = 1,
+    val xp: Long = 0L,
+    val reputation: Double = 100.0,       // 0 - 100, completion rate derived by the tick service
+    val totalRevenue: Double = 0.0,
+    val contractsCompleted: Int = 0,
+    val contractsFailed: Int = 0,
+    val distanceKm: Double = 0.0,
     val tick: Long = 0L,
     val autoDispatchEnabled: Boolean = true,
     val paused: Boolean = false,
     val speed: Double = 1.0
-)
+) {
+    /** Progress toward the next operator level, 0..1. */
+    val levelProgress: Float
+        get() = ((xp % XP_PER_LEVEL).toDouble() / XP_PER_LEVEL).toFloat().coerceIn(0f, 1f)
+
+    companion object {
+        const val XP_PER_LEVEL = 600L
+    }
+}
 
 enum class StaffRole {
     DRIVER,
@@ -50,8 +64,15 @@ data class Staff(
     val skill: Int = 5,             // 1 - 10
     val status: StaffStatus = StaffStatus.IDLE,
     val assignedVehicleId: String? = null,
-    val salaryPerDay: Double = 120.0
-)
+    val salaryPerDay: Double = 120.0,
+    val morale: Double = 100.0,     // 0 - 100
+    val restTicks: Int = 0
+) {
+    val isDriving: Boolean get() = status == StaffStatus.ON_SHIFT && assignedVehicleId != null
+    val initials: String
+        get() = name.split(' ').filter { it.isNotBlank() }.take(2)
+            .map { it.first().uppercaseChar() }.joinToString("")
+}
 
 enum class VehicleClass(
     val label: String,
@@ -93,11 +114,21 @@ data class Vehicle(
     val currentLocation: LatLng,
     val currentRoute: List<LatLng> = emptyList(),
     val routeProgress: Float = 0f,      // 0.0 to 1.0
+    val routeKm: Double = 0.0,          // length of the current routed leg
+    val travelledKm: Double = 0.0,      // distance covered on the current leg
     val assignedDriverId: String? = null,
     val currentContractId: String? = null,
     val heading: Float = 0f,            // bearing in degrees for marker rendering
     val lowFuelTicks: Int = 0           // consecutive ticks with fuel < 15
-)
+) {
+    val isWorking: Boolean
+        get() = status !in setOf(VehicleStatus.IDLE, VehicleStatus.BREAKDOWN, VehicleStatus.MAINTENANCE)
+    val isBroken: Boolean
+        get() = status == VehicleStatus.BREAKDOWN || status == VehicleStatus.MAINTENANCE
+    val remainingKm: Double get() = (routeKm - travelledKm).coerceAtLeast(0.0)
+    val legProgress: Float
+        get() = if (routeKm <= 0.0) 0f else (travelledKm / routeKm).toFloat().coerceIn(0f, 1f)
+}
 
 enum class ContractType(val label: String, val baseColorHex: Long) {
     RIDESHARE("Passenger Rideshare", 0xFF00E5FF),
@@ -142,8 +173,16 @@ data class Contract(
     val assignedVehicleId: String? = null,
     val assignedDriverId: String? = null,
     val createdAtTick: Long = 0L,
-    val completedAtTick: Long? = null
-)
+    val completedAtTick: Long? = null,
+    val routeKm: Double = 0.0,
+    val zoneId: String = pickup.zoneId
+) {
+    val isActive: Boolean
+        get() = status == ContractStatus.ASSIGNED || status == ContractStatus.IN_PROGRESS
+    /** Straight-line estimate used before the routing service returns a real leg. */
+    val estimatedKm: Double
+        get() = if (routeKm > 0.0) routeKm else pickup.toLatLng().distanceTo(dropoff.toLatLng()) * 1.35
+}
 
 enum class IncidentType(val label: String, val defaultCost: Double) {
     LOW_FUEL("Critical Fuel Alert", 120.0),
@@ -162,17 +201,21 @@ data class Incident(
     val resolved: Boolean = false,
     val costIfIgnored: Double,
     val description: String,
-    val createdTick: Long
+    val createdTick: Long,
+    val driverId: String? = null,
+    val zoneId: String? = null
 )
 
-enum class TransactionCategory {
-    REVENUE,
-    FUEL,
-    SALARY,
-    REPAIR,
-    TOW,
-    EXPANSION,
-    PURCHASE
+enum class TransactionCategory(val label: String, val isIncome: Boolean) {
+    REVENUE("Contract revenue", true),
+    LOAN("Financing", true),
+    FUEL("Fuel", false),
+    SALARY("Payroll", false),
+    REPAIR("Repairs", false),
+    TOW("Towing", false),
+    EXPANSION("Territory", false),
+    PURCHASE("Fleet purchase", false),
+    PENALTY("Penalties", false)
 }
 
 data class Transaction(
@@ -205,6 +248,8 @@ data class CityZone(
     val unlockCost: Double,
     val completionRateThreshold: Double,
     val completedContracts: Int = 0,
+    val failedContracts: Int = 0,
+    val unmetDemand: Int = 0,
     val bounds: ZoneBounds,
     val center: LatLng
 )
@@ -214,6 +259,38 @@ sealed class RealtimeEvent<T> {
     data class Updated<T>(val item: T) : RealtimeEvent<T>()
     data class Deleted<T>(val id: String) : RealtimeEvent<T>()
 }
+
+/** Human copy for the console; enum names alone read like machine states. */
+val VehicleStatus.shortLabel: String
+    get() = when (this) {
+        VehicleStatus.IDLE -> "Idle"
+        VehicleStatus.EN_ROUTE_TO_PICKUP -> "To pickup"
+        VehicleStatus.AT_PICKUP -> "At pickup"
+        VehicleStatus.LOADING -> "Loading"
+        VehicleStatus.EN_ROUTE_TO_DROPOFF -> "Delivering"
+        VehicleStatus.UNLOADING -> "Unloading"
+        VehicleStatus.DIVERT_TO_REFUEL -> "Refuelling"
+        VehicleStatus.BREAKDOWN -> "Breakdown"
+        VehicleStatus.FORCED_REST -> "Resting"
+        VehicleStatus.MAINTENANCE -> "In service"
+    }
+
+val StaffRole.shortLabel: String
+    get() = when (this) {
+        StaffRole.DRIVER -> "Driver"
+        StaffRole.DISPATCHER -> "Dispatcher"
+        StaffRole.MECHANIC -> "Mechanic"
+        StaffRole.MANAGER -> "Manager"
+    }
+
+val ContractStatus.shortLabel: String
+    get() = when (this) {
+        ContractStatus.OPEN -> "Open"
+        ContractStatus.ASSIGNED -> "Assigned"
+        ContractStatus.IN_PROGRESS -> "In transit"
+        ContractStatus.COMPLETED -> "Delivered"
+        ContractStatus.FAILED -> "Failed"
+    }
 
 data class MatchingScore(
     val vehicleId: String,

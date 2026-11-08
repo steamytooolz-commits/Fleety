@@ -21,7 +21,23 @@ async function post(path, body, token) {
 }
 
 const auth = await post('/api/collections/_superusers/auth-with-password', { identity: email, password });
-const demo = { email: 'demo@cityflow.local', password: 'cityflow123', passwordConfirm: 'cityflow123', company_name: 'Apex City Logistics', verified: true };
+const demo = {
+  email: 'demo@cityflow.local',
+  password: 'cityflow123',
+  passwordConfirm: 'cityflow123',
+  company_name: 'Apex City Logistics',
+  verified: true,
+  // A new operator starts with the matching engine on, a base and starting capital so the
+  // first tick can seed a fleet instead of leaving the board idle.
+  base_location: { lat: -33.9249, lng: 18.4241 },
+  cash: 18500,
+  level: 1,
+  tick: 0,
+  seed: 1337,
+  speed: 1,
+  auto_dispatch: true,
+  paused: false,
+};
 try {
   const created = await post('/api/collections/players/records', demo, auth.token);
   console.log(`Created demo player ${created.id} (demo@cityflow.local / cityflow123)`);

@@ -111,6 +111,75 @@ class SimulationTest {
     }
 
     @Test
+    fun `assign driver binds staff and vehicle and rejects a busy asset`() {
+        val routes = TestRoutes { _, _ -> route }
+        val world = testWorld(
+            listOf(
+                Vehicle("v1", VehicleClass.VAN, "T1", fuel = 90.0, location = City.base, driverId = "d1"),
+                Vehicle("v2", VehicleClass.VAN, "T2", fuel = 90.0, location = City.base),
+                Vehicle("v3", VehicleClass.VAN, "T3", fuel = 90.0, location = City.base,
+                    status = VehicleStatus.EN_ROUTE_TO_PICKUP),
+            ),
+            listOf(
+                Staff("d1", "D", Role.DRIVER, 0.0, 8, StaffStatus.ON_SHIFT, "v1"),
+                Staff("d2", "E", Role.DRIVER, 0.0, 7, StaffStatus.ON_SHIFT),
+            ),
+        )
+        fun assign(staffId: String, vehicleId: String) = Intent("k-$staffId-$vehicleId", "ASSIGN_DRIVER",
+            kotlinx.serialization.json.buildJsonObject {
+                put("staff_id", kotlinx.serialization.json.JsonPrimitive(staffId))
+                put("vehicle_id", kotlinx.serialization.json.JsonPrimitive(vehicleId))
+            })
+
+        val engine = Engine(cfg)
+        val first = engine.apply(world, assign("d1", "v2"), routes)
+        assertTrue(first.accepted)
+        assertEquals("v2", first.world.staff.first { it.id == "d1" }.vehicleId)
+        assertEquals("d1", first.world.vehicles.first { it.id == "v2" }.driverId)
+        assertNull(first.world.vehicles.first { it.id == "v1" }.driverId)
+
+        val busy = engine.apply(first.world, assign("d2", "v3"), routes)
+        assertFalse(busy.accepted, "a moving vehicle cannot take a new driver")
+    }
+
+    @Test
+    fun `recruitment charges the placement fee`() {
+        val routes = TestRoutes { _, _ -> route }
+        val world = testWorld(
+            listOf(Vehicle("v1", VehicleClass.VAN, "T1", fuel = 90.0, location = City.base)),
+            emptyList(),
+        ).copy(cash = 1000.0)
+        val intent = Intent("hire-1", "HIRE_STAFF", kotlinx.serialization.json.buildJsonObject {
+            put("name", kotlinx.serialization.json.JsonPrimitive("New Driver"))
+            put("role", kotlinx.serialization.json.JsonPrimitive("driver"))
+            put("skill", kotlinx.serialization.json.JsonPrimitive(7))
+        })
+        val outcome = Engine(cfg).apply(world, intent, routes)
+        assertTrue(outcome.accepted)
+        assertEquals(650.0, outcome.world.cash, 0.001)
+        assertTrue(outcome.world.ledger.any { it.category == TxCategory.SALARY && it.amount == -350.0 })
+    }
+
+    @Test
+    fun `lifetime counters accumulate outside the windowed contract list`() {
+        val routes = TestRoutes { _, _ -> route }
+        val world = testWorld(
+            listOf(Vehicle("v1", VehicleClass.VAN, "T1", fuel = 90.0, location = City.base,
+                status = VehicleStatus.UNLOADING, loadingTicks = 1, contractId = "c1", driverId = "d1")),
+            listOf(Staff("d1", "D", Role.DRIVER, 0.0, 8, StaffStatus.ON_SHIFT, "v1")),
+        ).copy(
+            contracts = listOf(Contract("c1", ContractType.PARCEL, City.pois[2], City.pois[3], Payload(5.0), 120.0, 500,
+                ContractStatus.IN_PROGRESS, "v1", "d1", completedAtTick = null)),
+            lifetimeCompleted = 4,
+            lifetimeRevenue = 800.0,
+        )
+        val next = Engine(cfg).step(world, routes).world
+        assertEquals(5, next.lifetimeCompleted)
+        assertEquals(920.0, next.lifetimeRevenue, 0.01)
+        assertEquals(ContractStatus.COMPLETED, next.contracts.first { it.id == "c1" }.status)
+    }
+
+    @Test
     fun `monte carlo is reproducible and ordered`() {
         val world = City.initialWorld("p1").copy(cash = 20000.0)
         val req = ExpansionRequest(additionalVehicles = 2, additionalDrivers = 2, marketingSpend = 2000.0, days = 30, iterations = 200)
